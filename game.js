@@ -1,11 +1,11 @@
 'use strict';
-// Lichtung – gemeinsam ein Dorf aufbauen. Mehrspieler-Technik wie in BombRe (siehe docs/online-multiplayer.md dort).
+// Lichtung (Iteration 2, Strategie) – gemeinsam ein Dorf aufbauen, nur mit Baumenü. Mehrspieler-Technik wie in BombRe (siehe docs/online-multiplayer.md dort).
 
 const VERSION = '__VERSION__';
 const $ = (id) => document.getElementById(id);
 const LOCAL = new URLSearchParams(location.search).has('local');
-const PEER_PREFIX = 'lichtung-v1-';
-const SAVE_PREFIX = 'lichtung-save-';
+const PEER_PREFIX = 'lichtung-v2-';
+const SAVE_PREFIX = 'lichtung2-save-';
 const W = 64, H = 48, T = 32;          // Karte in Feldern, Feldgröße in Pixeln
 const DAY_LEN = 120;                   // Sekunden pro Tag
 const NIGHT_FROM = 0.72;               // ab diesem Anteil des Tages ist Nacht
@@ -22,19 +22,22 @@ const BUILD = {
   F: { name: 'Feuerstelle', icon: '🔥', cost: { wood: 5 }, level: 0, desc: 'Wärmt und spendet Licht. Ohne Feuer kommen keine Siedler.' },
   H: { name: 'Hütte', icon: '🛖', cost: { wood: 10 }, level: 0, beds: 2, desc: 'Betten für 2 Siedler.' },
   S: { name: 'Sammlerhütte', icon: '🧺', cost: { wood: 8 }, level: 0, job: 'food', rate: 3, near: 'Bb', desc: '1 Siedler sammelt Beeren in der Nähe, bis +3 Nahrung am Tag.' },
-  L: { name: 'Holzfäller', icon: '🪓', cost: { wood: 8, stone: 3 }, level: 1, job: 'wood', rate: 4, near: 'T', desc: '1 Siedler fällt Bäume in der Nähe, bis +4 Holz am Tag.' },
-  A: { name: 'Acker', icon: '🌾', cost: { wood: 6 }, level: 1, job: 'food', rate: 5, noWinter: true, walk: true, desc: '1 Siedler bestellt das Feld, +5 Nahrung am Tag. Nicht im Winter.' },
+  L: { name: 'Holzfäller', icon: '🪓', cost: { wood: 8 }, level: 0, job: 'wood', rate: 4, near: 'T', desc: '1 Siedler fällt Bäume in der Nähe, bis +4 Holz am Tag.' },
+  A: { name: 'Acker', icon: '🌾', cost: { wood: 6 }, level: 0, job: 'food', rate: 5, noWinter: true, walk: true, desc: '1 Siedler bestellt das Feld, +5 Nahrung am Tag. Nicht im Winter.' },
   Q: { name: 'Steinbruch', icon: '⛏️', cost: { wood: 12 }, level: 1, job: 'stone', rate: 3, near: 'R', desc: '1 Siedler bricht Steine in der Nähe, bis +3 Stein am Tag.' },
   M: { name: 'Steinhaus', icon: '🏠', cost: { wood: 10, stone: 12 }, level: 2, beds: 4, desc: 'Betten für 4 Siedler.' },
   P: { name: 'Dorfbrunnen', icon: '⛲', cost: { wood: 20, stone: 25 }, level: 2, desc: 'Das Herz des Dorfes.' },
 };
 const BUILD_KEYS = 'FHSLAQMP';
+const TOOLS = BUILD_KEYS + 'X';      // X = Abreißen
+const DEMOLISH = { name: 'Abreißen', icon: '🧹', desc: 'Gebäude entfernen. Die Hälfte der Baukosten kommt zurück.' };
+const START_FOUNDERS = 3;
 const RES_ICON = { wood: '🪵', stone: '🪨', food: '🍓' };
 
 const LEVELS = [
-  { name: 'Lagerplatz', goal: 'Feuerstelle und Hütte bauen, damit Siedler kommen', check: (g) => g.villagers.length >= 2 },
-  { name: 'Siedlung', goal: 'Auf 6 Bewohner wachsen', check: (g) => g.villagers.length >= 6 },
-  { name: 'Weiler', goal: 'Den Dorfbrunnen bauen und 10 Bewohner haben', check: (g) => g.villagers.length >= 10 && g.count('P') > 0 },
+  { name: 'Lagerplatz', goal: 'Feuerstelle, Hütten und Arbeit für 5 Siedler schaffen', check: (g) => g.villagers.length >= 5 },
+  { name: 'Siedlung', goal: 'Auf 8 Bewohner wachsen', check: (g) => g.villagers.length >= 8 },
+  { name: 'Weiler', goal: 'Den Dorfbrunnen bauen und 14 Bewohner haben', check: (g) => g.villagers.length >= 14 && g.count('P') > 0 },
   { name: 'Dorf', goal: 'Euer Dorf steht. Lasst es weiter wachsen!' },
 ];
 
@@ -43,7 +46,7 @@ function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 function slug(s) { return String(s).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40); }
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 async function hashPw(room, pw) {
-  const text = 'lichtung|' + room + '|' + pw;
+  const text = 'lichtung2|' + room + '|' + pw;
   if (window.crypto && crypto.subtle) {
     const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -116,9 +119,10 @@ class Game {
     this.grid = genMap(this.seed);
     this.hp = new Map(); this.regrow = new Map();
     this.buildings = []; this.villagers = [];
-    this.res = { wood: 0, stone: 0, food: 12 };
+    this.res = { wood: 40, stone: 0, food: 20 };
     this.day = 1; this.time = 0.05; this.prog = 0; this.level = 0; this.nextId = 1;
     this.stats = {};
+    for (let k = 0; k < START_FOUNDERS; k++) this.newVillager(W / 2 + Math.cos(k * 2.1) * 1.5, H / 2 + Math.sin(k * 2.1) * 1.5);
   }
 
   load(s) {
@@ -130,7 +134,6 @@ class Game {
     this.level = s.level; this.nextId = s.nextId; this.stats = s.stats;
     this.assign();
     this.nearT = 0;
-    for (const p of this.players) this.spawn(p);
   }
 
   toSave() {
@@ -154,32 +157,10 @@ class Game {
   event(text) { this.events.push([++this.evId, text]); if (this.events.length > 8) this.events.shift(); }
   stat(name) { return this.stats[name] || (this.stats[name] = { g: 0, b: 0 }); }
 
-  solid(x, y) {
-    const c = this.tile(x, y);
-    if (c === '.' || c === 't' || c === 'A') return false;
-    return true;
-  }
-  blocked(x, y, r) {
-    if (x < r || y < r || x > W - r || y > H - r) return true;
-    for (const [ox, oy] of [[-r, -r], [r, -r], [-r, r], [r, r]]) if (this.solid(Math.floor(x + ox), Math.floor(y + oy))) return true;
-    return false;
-  }
-
-  spawn(p) {
-    // freien Platz nahe der Mitte suchen
-    for (let d = 0; d < 20; d++) for (let k = 0; k < 16; k++) {
-      const a = (k / 16) * Math.PI * 2, x = Math.floor(W / 2 + Math.cos(a) * d) + 0.5, y = Math.floor(H / 2 + Math.sin(a) * d) + 0.5;
-      if (this.blocked(x, y, 0.32) || this.players.some((q) => q !== p && Math.hypot(q.x - x, q.y - y) < 1.5)) continue;
-      p.x = x; p.y = y; return;
-    }
-    p.x = W / 2; p.y = H / 2;
-  }
-
   addPlayer(id, name) {
     const used = new Set(this.players.map((p) => p.color));
     const color = COLORS.find((c) => !used.has(c)) || COLORS[0];
-    const p = { id, name, color, x: 0, y: 0, dir: [0, 1], input: { dx: 0, dy: 0, work: 0 }, workT: 0, working: 0, moving: 0 };
-    this.spawn(p);
+    const p = { id, name, color, hx: -1, hy: -1 };
     this.players.push(p);
     this.stat(name);
     this.event(name + ' ist auf der Lichtung angekommen.');
@@ -200,7 +181,6 @@ class Game {
     x |= 0; y |= 0;
     if (def.level > this.level) return def.name + ' gibt es erst ab Stufe „' + LEVELS[def.level].name + '“.';
     if (this.tile(x, y) !== '.') return 'Dort ist kein Platz. Nur auf freier Wiese bauen.';
-    if (!def.walk && this.players.some((q) => Math.abs(q.x - (x + 0.5)) < 0.85 && Math.abs(q.y - (y + 0.5)) < 0.85)) return 'Da steht jemand im Weg.';
     if (!this.canAfford(k)) return 'Nicht genug Vorrat: ' + costText(def.cost) + '.';
     for (const r in def.cost) this.res[r] -= def.cost[r];
     const i = y * W + x;
@@ -211,6 +191,29 @@ class Game {
     this.nearT = 0;
     this.assign();
     return null;
+  }
+
+  demolish(pid, x, y) {
+    const p = this.players.find((q) => q.id === pid);
+    const b = this.buildings.find((q) => q.x === (x | 0) && q.y === (y | 0));
+    if (!p || !b) return 'Dort steht kein Gebäude.';
+    const def = BUILD[b.k];
+    for (const r in def.cost) this.res[r] += Math.floor(def.cost[r] / 2);
+    this.buildings = this.buildings.filter((q) => q !== b);
+    this.setTile(b.y * W + b.x, '.');
+    this.event('🧹 ' + p.name + ' hat abgerissen: ' + def.name + '.');
+    this.nearT = 0;
+    this.assign();
+    return null;
+  }
+
+  newVillager(x, y) {
+    const used = new Set(this.villagers.map((v) => v.name));
+    const free = NAMES.filter((n) => !used.has(n));
+    const name = free.length ? free[(Math.random() * free.length) | 0] : 'Siedler ' + this.nextId;
+    const v = { id: this.nextId++, name, x: clamp(x, 1, W - 1), y: clamp(y, 1, H - 1), hungry: 0, cold: 0, home: null, job: null };
+    this.villagers.push(v);
+    return v;
   }
 
   // Siedlern Betten und Arbeit zuteilen
@@ -252,18 +255,14 @@ class Game {
     const before = this.time;
     this.time += dt / DAY_LEN;
     if (this.time >= 1) { this.time -= 1; this.day++; this.dawn(); }
-    if (before < 0.4 && this.time >= 0.4) this.immigrate();
-
-    for (const p of this.players) this.stepPlayer(p, dt);
+    for (const q of [0.2, 0.45, 0.65]) if (before < q && this.time >= q) this.immigrate();
 
     // Nachwachsen (nicht im Winter)
     if (!this.winter) {
       for (const [i, t] of this.regrow) {
         const nt = t - dt;
         if (nt > 0) { this.regrow.set(i, nt); continue; }
-        const x = i % W, y = (i / W) | 0, c = this.grid[i];
-        const occupied = this.players.some((p) => Math.floor(p.x) === x && Math.floor(p.y) === y);
-        if (occupied) continue;
+        const c = this.grid[i];
         this.regrow.delete(i);
         if (c === 't') this.setTile(i, 'T');
         else if (c === 'b') this.setTile(i, 'B');
@@ -293,42 +292,6 @@ class Game {
     }
   }
 
-  stepPlayer(p, dt) {
-    let { dx, dy } = p.input;
-    p.moving = dx || dy ? 1 : 0;
-    if (p.moving) {
-      p.dir = [dx, dy];
-      const sp = 4.2 * (dx && dy ? 0.7071 : 1);
-      const nx = p.x + dx * sp * dt; if (!this.blocked(nx, p.y, 0.32)) p.x = nx;
-      const ny = p.y + dy * sp * dt; if (!this.blocked(p.x, ny, 0.32)) p.y = ny;
-    }
-    p.working = 0;
-    if (!p.input.work) { p.workT = 0; return; }
-    // nächstes Rohstoff-Feld in Blickrichtung suchen
-    const fx = p.x + p.dir[0] * 0.6, fy = p.y + p.dir[1] * 0.6;
-    let best = -1, bd = 1.25;
-    for (let y = Math.floor(p.y) - 1; y <= Math.floor(p.y) + 1; y++) for (let x = Math.floor(p.x) - 1; x <= Math.floor(p.x) + 1; x++) {
-      if (!YIELD[this.tile(x, y)]) continue;
-      const d = Math.hypot(x + 0.5 - fx, y + 0.5 - fy);
-      if (d < bd) { bd = d; best = y * W + x; }
-    }
-    if (best < 0) { p.workT = 0; return; }
-    p.working = 1;
-    p.workAt = best;
-    p.workT += dt;
-    if (p.workT < 0.6) return;
-    p.workT = 0;
-    const c = this.grid[best], r = YIELD[c];
-    this.res[r] += 1;
-    this.stat(p.name).g++;
-    const hp = (this.hp.has(best) ? this.hp.get(best) : HP[c]) - 1;
-    if (hp > 0) { this.hp.set(best, hp); return; }
-    this.hp.delete(best);
-    if (c === 'T') { this.setTile(best, 't'); this.regrow.set(best, 200 + Math.random() * 100); }
-    else if (c === 'B') { this.setTile(best, 'b'); this.regrow.set(best, 70 + Math.random() * 40); }
-    else if (c === 'R') this.setTile(best, '.');
-  }
-
   // Morgens: essen, heizen, wer zu lange hungert oder friert, zieht weg
   dawn() {
     if ((this.day - 1) % DAYS_PER_SEASON === 0) {
@@ -347,8 +310,9 @@ class Game {
       if (this.res.wood >= need) { this.res.wood -= need; for (const v of this.villagers) v.cold = 0; this.event('🪵 Die Häuser wurden mit ' + need + ' Holz geheizt.'); }
       else { this.res.wood = 0; for (const v of this.villagers) v.cold++; this.event('🥶 Zu wenig Holz zum Heizen! Die Siedler frieren.'); }
     } else for (const v of this.villagers) v.cold = 0;
-    const leaving = this.villagers.filter((v) => v.hungry >= 2 || v.cold >= 2 || !v.home);
-    for (const v of leaving) this.event(v.name + ' hat das Dorf verlassen' + (v.hungry >= 2 ? ' (Hunger).' : v.cold >= 2 ? ' (Kälte).' : ' (kein Bett).'));
+    const noFire = !this.count('F');
+    const leaving = this.villagers.filter((v) => v.hungry >= 2 || v.cold >= 2 || (!v.home && noFire));
+    for (const v of leaving) this.event(v.name + ' hat das Dorf verlassen' + (v.hungry >= 2 ? ' (Hunger).' : v.cold >= 2 ? ' (Kälte).' : ' (kein Bett, kein Feuer).'));
     if (leaving.length) { this.villagers = this.villagers.filter((v) => !leaving.includes(v)); this.assign(); }
     this.immigrate();
   }
@@ -359,13 +323,10 @@ class Game {
     if (this.beds() <= n) return;
     if (this.res.food < n + 3) return;
     if (this.winter && this.res.wood < Math.ceil((n + 1) / 2)) return;
-    const used = new Set(this.villagers.map((v) => v.name));
-    const free = NAMES.filter((x) => !used.has(x));
-    const name = free.length ? free[(Math.random() * free.length) | 0] : 'Siedler ' + this.nextId;
     const a = Math.random() * Math.PI * 2;
-    this.villagers.push({ id: this.nextId++, name, x: clamp(W / 2 + Math.cos(a) * 18, 1, W - 1), y: clamp(H / 2 + Math.sin(a) * 18, 1, H - 1), hungry: 0, cold: 0, home: null, job: null });
+    const v = this.newVillager(W / 2 + Math.cos(a) * 18, H / 2 + Math.sin(a) * 18);
     this.assign();
-    this.event('🏡 ' + name + ' ist ins Dorf gezogen.');
+    this.event('🏡 ' + v.name + ' ist ins Dorf gezogen.');
   }
 
   checkLevel() {
@@ -380,11 +341,12 @@ class Game {
     const s = {
       t: 'state', day: this.day, time: +this.time.toFixed(4), level: this.level,
       res: [Math.floor(this.res.wood), Math.floor(this.res.stone), Math.floor(this.res.food)],
-      pop: this.villagers.length, beds: this.beds(),
-      players: this.players.map((p) => [p.id, p.name, p.color, +p.x.toFixed(2), +p.y.toFixed(2), p.dir[0], p.dir[1], p.moving, p.working ? p.workAt : -1]),
+      pop: this.villagers.length, beds: this.beds(), idle: this.villagers.filter((v) => !v.job).length, speed: this.speed || 1,
+      players: this.players.map((p) => [p.id, p.name, p.color, p.hx, p.hy]),
+      bl: this.buildings.map((b) => [b.x, b.y, b.worker ? 1 : 0, Math.round(b.eff * 100)]),
       vill: this.villagers.map((v) => [+v.x.toFixed(2), +v.y.toFixed(2), v.working ? 1 : 0, v.hungry || v.cold ? 1 : 0]),
       ev: this.events,
-      stats: Object.entries(this.stats).sort((a, b) => (b[1].g + b[1].b * 5) - (a[1].g + a[1].b * 5)).slice(0, 12),
+      stats: Object.entries(this.stats).sort((a, b) => b[1].b - a[1].b).slice(0, 12),
     };
     if (withChanges) { s.chg = this.changes; this.changes = []; }
     return s;
@@ -487,7 +449,7 @@ const Net = {
   },
 };
 function localHost(room, onConn) {
-  const bc = new BroadcastChannel('li-' + room);
+  const bc = new BroadcastChannel('li2-' + room);
   const conns = new Map();
   bc.onmessage = ({ data: m }) => {
     if (m.to !== 'host') return;
@@ -502,7 +464,7 @@ function localHost(room, onConn) {
 }
 function localJoin(room) {
   return new Promise((resolve, reject) => {
-    const bc = new BroadcastChannel('li-' + room);
+    const bc = new BroadcastChannel('li2-' + room);
     const me = Math.random().toString(36).slice(2);
     const conn = { send: (o) => bc.postMessage({ to: 'host', from: me, d: o }), close: () => { bc.postMessage({ to: 'host', from: me, bye: 1 }); bc.close(); }, onData: null, onClose: null };
     const timer = setTimeout(() => { bc.close(); reject(new Error('Dieses Dorf ist gerade nicht geöffnet.')); }, 1500);
@@ -519,7 +481,7 @@ function localJoin(room) {
 // ---------------------------------------------------------------- Zustand
 const S = {
   role: null, solo: false, room: '', pw: '', pwHash: '', myId: null, game: null, hostNet: null, conns: new Map(), conn: null,
-  view: null, grid: null, disp: new Map(), input: { dx: 0, dy: 0, work: 0 }, lastSent: '', sel: null, hover: null, seenEv: 0,
+  view: null, grid: null, input: { hx: -1, hy: -1 }, lastSent: '', sel: null, hover: null, seenEv: 0,
 };
 let loopId = 0;
 const broadcast = (msg) => { for (const c of S.conns.values()) c.send(msg); };
@@ -588,9 +550,10 @@ function onClientConnect(conn) {
     }
     if (m.t === 'input') {
       const p = g.players.find((q) => q.id === pid);
-      if (p) p.input = { dx: Math.sign(m.dx) | 0, dy: Math.sign(m.dy) | 0, work: m.work ? 1 : 0 };
+      if (p) { p.hx = clamp(m.hx | 0, -1, W - 1); p.hy = clamp(m.hy | 0, -1, H - 1); }
     } else if (m.t === 'build') {
-      const err = g.build(pid, String(m.k), m.x | 0, m.y | 0);
+      const k = String(m.k);
+      const err = k === 'X' ? g.demolish(pid, m.x | 0, m.y | 0) : g.build(pid, k, m.x | 0, m.y | 0);
       if (err) conn.send({ t: 'info', text: err });
     } else if (m.t === 'savedata' && askedSave) {
       askedSave = false;
@@ -618,9 +581,10 @@ function runHostLoop() {
   const tick = (now) => {
     const dt = Math.min(0.25, (now - last) / 1000); last = now; acc += dt;
     const g = S.game;
-    const me = g.players.find((p) => p.id === 'host'); if (me) me.input = { ...S.input };
+    const me = g.players.find((p) => p.id === 'host'); if (me) { me.hx = S.input.hx; me.hy = S.input.hy; }
     while (acc >= TICK) {
-      g.step(TICK); acc -= TICK;
+      for (let k = 0; k < (g.speed || 1); k++) g.step(TICK);
+      acc -= TICK;
       if (++n % SEND_EVERY === 0 && S.conns.size) broadcast(g.snapshot(true));
       else if (!S.conns.size) g.changes = [];
     }
@@ -687,7 +651,7 @@ function runClientLoop() {
   const id = ++loopId;
   const frame = () => {
     if (id !== loopId || S.role !== 'client') return;
-    const key = S.input.dx + ',' + S.input.dy + ',' + S.input.work;
+    const key = S.input.hx + ',' + S.input.hy;
     if (key !== S.lastSent) { S.lastSent = key; S.conn.send({ t: 'input', ...S.input }); }
     if (S.view && S.grid) draw(S.view, false);
     requestAnimationFrame(frame);
@@ -696,7 +660,7 @@ function runClientLoop() {
   const iv = setInterval(() => {
     if (id !== loopId || S.role !== 'client') return clearInterval(iv);
     S.conn && S.conn.send({ t: 'input', ...S.input });
-  }, 250);
+  }, 1000);
 }
 
 // ---------------------------------------------------------------- Gemeinsam
@@ -708,14 +672,14 @@ function leave(reason) {
     S.hostNet && S.hostNet.close();
   } else if (S.conn) { const c = S.conn; S.conn = null; c.close(); }
   Object.assign(S, { role: null, game: null, hostNet: null, conns: new Map(), conn: null, view: null, grid: null, myId: null, sel: null, seenEv: 0 });
-  S.disp.clear();
+  camInit = false;
   $('screen-start').hidden = false; $('screen-game').hidden = true;
   renderSaves();
   startMsg(reason || '');
 }
 
 function doBuild(k, x, y) {
-  if (S.role === 'host') { const err = S.game.build('host', k, x, y); if (err) toast(err); }
+  if (S.role === 'host') { const err = k === 'X' ? S.game.demolish('host', x, y) : S.game.build('host', k, x, y); if (err) toast(err); }
   else if (S.conn) S.conn.send({ t: 'build', k, x, y });
 }
 
@@ -734,6 +698,8 @@ function enterGame() {
     : S.role === 'host' ? 'Dorf „' + S.room + '“. Wird alle 15 Sekunden gespeichert.'
       : 'Du bist Gast im Dorf „' + S.room + '“. Eine Kopie wird in deinem Browser gespeichert.';
   renderBuildbar();
+  $('speed').hidden = S.role !== 'host';
+  setSpeed(S.role === 'host' ? (S.game.speed || 1) : 1);
   try { if (navigator.wakeLock && S.role === 'host') navigator.wakeLock.request('screen').catch(() => {}); } catch (e) {}
 }
 
@@ -747,9 +713,9 @@ function toast(text) {
 
 // ---------------------------------------------------------------- Oberfläche
 function renderBuildbar() {
-  $('buildbar').innerHTML = BUILD_KEYS.split('').map((k, i) => {
-    const d = BUILD[k];
-    return `<button data-k="${k}" title="${esc(d.desc)}"><span class="k">${i + 1}</span><b>${d.icon} ${esc(d.name)}</b><span class="c">${costText(d.cost)}</span></button>`;
+  $('buildbar').innerHTML = TOOLS.split('').map((k, i) => {
+    const d = BUILD[k] || DEMOLISH;
+    return `<button data-k="${k}" title="${esc(d.desc)}"><span class="k">${k === 'X' ? 'X' : i + 1}</span><b>${d.icon} ${esc(d.name)}</b><span class="c">${d.cost ? costText(d.cost) : '½ zurück'}</span></button>`;
   }).join('');
 }
 function selectBuild(k) {
@@ -759,10 +725,26 @@ function selectBuild(k) {
 function updateHint() {
   const v = S.view;
   for (const b of $('buildbar').children) b.classList.toggle('sel', b.dataset.k === S.sel);
-  if (!S.sel) { $('build-hint').textContent = 'Halte Leertaste vor Bäumen, Steinen und Beeren. Wähle ein Gebäude, um zu bauen.'; return; }
-  const d = BUILD[S.sel];
-  const locked = v && d.level > v.level;
-  $('build-hint').textContent = d.icon + ' ' + d.name + ': ' + d.desc + (locked ? ' (Ab Stufe „' + LEVELS[d.level].name + '“.)' : ' Klicke auf freie Wiese oder drücke B. Esc bricht ab.');
+  let text;
+  if (!S.sel) text = 'Wähle unten ein Gebäude und klicke auf freie Wiese. Karte verschieben: ziehen oder WASD/Pfeiltasten.';
+  else if (S.sel === 'X') text = DEMOLISH.icon + ' ' + DEMOLISH.desc + ' Klicke auf ein Gebäude. Esc bricht ab.';
+  else {
+    const d = BUILD[S.sel], locked = v && d.level > v.level;
+    text = d.icon + ' ' + d.name + ': ' + d.desc + (locked ? ' (Ab Stufe „' + LEVELS[d.level].name + '“.)' : ' Klicke auf freie Wiese. Esc oder Rechtsklick bricht ab.');
+  }
+  // Infos zum Gebäude unter dem Mauszeiger
+  if (v && S.hover && S.grid) {
+    const [hx, hy] = S.hover, c = S.grid[hy * W + hx], d = BUILD[c];
+    if (d) {
+      const b = (v.bl || []).find((q) => q[0] === hx && q[1] === hy);
+      let info = d.icon + ' ' + d.name;
+      if (d.job && b) info += b[2] ? (d.near ? ' · arbeitet, Umgebung ' + b[3] + ' %' : ' · arbeitet') : ' · kein Arbeiter frei';
+      if (d.near && b && b[3] < 50) info += ' (zu wenig ' + { Bb: 'Beerensträucher', T: 'Bäume', R: 'Felsen' }[d.near] + ' in der Nähe)';
+      if (d.beds) info += ' · ' + d.beds + ' Betten';
+      text = info + '  |  ' + text;
+    }
+  }
+  if ($('build-hint').textContent !== text) $('build-hint').textContent = text;
 }
 
 let hudT = 0;
@@ -772,7 +754,7 @@ function updateHud(v) {
   hudT = now;
   const [w, s, f] = v.res;
   $('r-wood').textContent = w; $('r-stone').textContent = s; $('r-food').textContent = f;
-  $('r-pop').textContent = v.pop + ' / ' + v.beds;
+  $('r-pop').textContent = v.pop + ' / ' + v.beds + (v.idle ? ' · ' + v.idle + ' ohne Arbeit' : '');
   $('r-food').parentElement.classList.toggle('low', f < v.pop);
   const season = Math.floor((v.day - 1) / DAYS_PER_SEASON) % 4;
   $('r-wood').parentElement.classList.toggle('low', season === 3 && w < Math.ceil(v.pop / 2));
@@ -784,6 +766,7 @@ function updateHud(v) {
   $('l-goal').textContent = 'Ziel: ' + LEVELS[v.level].goal;
   for (const b of $('buildbar').children) {
     const d = BUILD[b.dataset.k];
+    if (!d) continue;
     b.classList.toggle('locked', d.level > v.level);
     const c = d.cost;
     b.classList.toggle('poor', (c.wood || 0) > w || (c.stone || 0) > s);
@@ -794,10 +777,10 @@ function updateHud(v) {
   const online = new Set(v.players.map((p) => p[1]));
   const colorOf = new Map(v.players.map((p) => [p[1], p[2]]));
   const html = (v.stats || []).map(([name, st]) =>
-    `<li><span class="dot" style="background:${online.has(name) ? colorOf.get(name) : '#555'}"></span>${esc(name)}${v.players.some((p) => p[0] === S.myId && p[1] === name) ? ' (du)' : ''}<span class="sm">${st.g} gesammelt · ${st.b} gebaut</span></li>`).join('')
+    `<li><span class="dot" style="background:${online.has(name) ? colorOf.get(name) : '#555'}"></span>${esc(name)}${v.players.some((p) => p[0] === S.myId && p[1] === name) ? ' (du)' : ''}<span class="sm">${st.b} gebaut</span></li>`).join('')
     + `<li><span class="dot" style="background:#c9b07a"></span>${v.pop} Siedler<span class="sm">${v.beds} Betten</span></li>`;
   if ($('people').innerHTML !== html) $('people').innerHTML = html;
-  if (!updateHud.hinted) { updateHud.hinted = true; updateHint(); }
+  updateHint();
 }
 
 // ---------------------------------------------------------------- Zeichnen
@@ -819,20 +802,11 @@ function draw(v, isHost) {
   updateHud(v);
   const season = Math.floor((v.day - 1) / DAYS_PER_SEASON) % 4, winter = season === 3;
   const t = performance.now() / 1000;
-  // geglättete Positionen
-  const shown = [];
-  for (const p of v.players) {
-    let d = S.disp.get(p[0]);
-    if (!d || isHost || Math.hypot(d.x - p[3], d.y - p[4]) > 3) d = { x: p[3], y: p[4] };
-    else { d.x += (p[3] - d.x) * 0.35; d.y += (p[4] - d.y) * 0.35; }
-    S.disp.set(p[0], d);
-    shown.push({ p, d });
-  }
-  const me = shown.find((s) => s.p[0] === S.myId);
-  if (me) {
-    cam.x = clamp(me.d.x * T - VW / 2, 0, W * T - VW);
-    cam.y = clamp(me.d.y * T - VH / 2, 0, H * T - VH);
-  }
+  // Kamera: frei verschiebbar, am Anfang auf die Dorfmitte
+  const now = performance.now(), fdt = Math.min(0.05, (now - (draw.last || now)) / 1000); draw.last = now;
+  if (!camInit) { camInit = true; cam.x = W * T / 2 - VW / 2; cam.y = H * T / 2 - VH / 2; }
+  cam.x = clamp(cam.x + panDir[0] * 700 * fdt, 0, W * T - VW);
+  cam.y = clamp(cam.y + panDir[1] * 700 * fdt, 0, H * T - VH);
   ctx.save();
   ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
   const x0 = Math.floor(cam.x / T), y0 = Math.floor(cam.y / T), x1 = Math.min(W - 1, x0 + Math.ceil(VW / T) + 1), y1 = Math.min(H - 1, y0 + Math.ceil(VH / T) + 1);
@@ -848,17 +822,21 @@ function draw(v, isHost) {
     if (c === 'F') fires.push([px + T / 2, py + T / 2]);
     if (BUILD[c] && BUILD[c].icon && c !== 'F' && c !== 'A') { ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(BUILD[c].icon, px + T / 2, py + T - 3); }
   }
-  // Ziel-Feld beim Arbeiten
-  for (const { p } of shown) if (p[8] >= 0) {
-    const wx = (p[8] % W) * T, wy = ((p[8] / W) | 0) * T;
-    ctx.strokeStyle = 'rgba(255,240,180,.8)'; ctx.lineWidth = 2; ctx.strokeRect(wx + 2, wy + 2, T - 4, T - 4);
+  // Gebäude ohne Arbeiter markieren
+  for (const [bx, by, worker, eff] of v.bl || []) {
+    const d = BUILD[grid[by * W + bx]];
+    if (!d || !d.job || bx < x0 - 1 || bx > x1 || by < y0 - 1 || by > y1) continue;
+    if (!worker || eff < 50) { ctx.font = '12px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(!worker ? '💤' : '⚠️', bx * T + T - 6, by * T + 11); }
   }
   // Bau-Vorschau
   if (S.sel && S.hover) {
-    const [hx, hy] = S.hover, ok = grid[hy * W + hx] === '.' && BUILD[S.sel].level <= v.level;
+    const [hx, hy] = S.hover, c = grid[hy * W + hx];
+    const ok = S.sel === 'X' ? !!BUILD[c] : c === '.' && BUILD[S.sel].level <= v.level;
     ctx.fillStyle = ok ? 'rgba(120,255,120,.35)' : 'rgba(255,80,60,.35)';
     ctx.fillRect(hx * T, hy * T, T, T);
-    ctx.globalAlpha = 0.7; ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(BUILD[S.sel].icon, hx * T + T / 2, hy * T + T / 2 + 6); ctx.globalAlpha = 1;
+    ctx.globalAlpha = 0.7; ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.fillText((BUILD[S.sel] || DEMOLISH).icon, hx * T + T / 2, hy * T + T / 2 + 6); ctx.globalAlpha = 1;
+  } else if (S.hover) {
+    ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 1.5; ctx.strokeRect(S.hover[0] * T + 1, S.hover[1] * T + 1, T - 2, T - 2);
   }
   // Siedler
   for (const [x, y, working, sad] of v.vill) {
@@ -868,8 +846,8 @@ function draw(v, isHost) {
     ctx.fillStyle = '#f1d6b0'; ctx.beginPath(); ctx.arc(px, py - 7, 4.5, 0, Math.PI * 2); ctx.fill();
     if (sad) { ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(winter ? '🥶' : '😟', px, py - 14); }
   }
-  // Spieler
-  for (const { p, d } of shown) drawPlayer(d.x * T, d.y * T, p, t);
+  // Zeiger der Mitspieler
+  for (const p of v.players) if (p[0] !== S.myId && p[3] >= 0) drawCursor(p);
   ctx.restore();
 
   // Nacht und Dämmerung mit Lichtkreisen ums Feuer
@@ -884,7 +862,6 @@ function draw(v, isHost) {
     lctx.fillStyle = `rgba(12,16,48,${dark})`; lctx.fillRect(0, 0, VW, VH);
     lctx.globalCompositeOperation = 'destination-out';
     const lights = fires.map(([x, y]) => [x, y, 150 + Math.sin(t * 7 + x) * 6]);
-    if (me) lights.push([me.d.x * T, me.d.y * T, 55]);
     for (const [x, y, r] of lights) {
       const sx = x - cam.x, sy = y - cam.y;
       const g = lctx.createRadialGradient(sx, sy, 10, sx, sy, r);
@@ -940,81 +917,82 @@ function drawTile(c, px, py, winter, t, x, y) {
   }
 }
 
-function drawPlayer(px, py, p, t) {
-  const [, name, color, , , ddx, ddy, moving, workAt] = p;
-  const bob = moving ? Math.abs(Math.sin(t * 10)) * 2 : 0;
-  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(px, py + 9, 8, 3.5, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = color; ctx.beginPath(); ctx.arc(px, py - bob, 8, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1.5; ctx.stroke();
-  ctx.fillStyle = '#f1d6b0'; ctx.beginPath(); ctx.arc(px, py - 10 - bob, 6, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(px + ddx * 3 - 2, py - 10 - bob + ddy * 2, 1.2, 0, Math.PI * 2); ctx.arc(px + ddx * 3 + 2, py - 10 - bob + ddy * 2, 1.2, 0, Math.PI * 2); ctx.fill();
-  if (workAt >= 0) {
-    const sw = Math.sin(t * 14) * 0.8;
-    ctx.save(); ctx.translate(px + ddx * 9, py - 4 + ddy * 6); ctx.rotate(sw);
-    ctx.fillStyle = '#6b4a2b'; ctx.fillRect(-1.5, -10, 3, 12); ctx.fillStyle = '#c7ccd1'; ctx.fillRect(-1.5, -11, 7, 4);
-    ctx.restore();
-  }
-  ctx.font = 'bold 11px system-ui, sans-serif'; ctx.textAlign = 'center';
-  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.strokeText(name, px, py - 20 - bob);
-  ctx.fillStyle = '#fff'; ctx.fillText(name, px, py - 20 - bob);
+function drawCursor(p) {
+  const [, name, color, hx, hy] = p, px = hx * T, py = hy * T;
+  ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.strokeRect(px + 1, py + 1, T - 2, T - 2);
+  ctx.font = 'bold 11px system-ui, sans-serif'; ctx.textAlign = 'left';
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.strokeText(name, px + 2, py - 4);
+  ctx.fillStyle = color; ctx.fillText(name, px + 2, py - 4);
 }
 
 // ---------------------------------------------------------------- Eingabe
+let camInit = false;
+const panDir = [0, 0];
 const held = new Set();
 const DIRS = { ArrowLeft: [-1, 0], KeyA: [-1, 0], ArrowRight: [1, 0], KeyD: [1, 0], ArrowUp: [0, -1], KeyW: [0, -1], ArrowDown: [0, 1], KeyS: [0, 1] };
-function recomputeDir() {
+function recomputePan() {
   let dx = 0, dy = 0;
   for (const k of held) if (DIRS[k]) { dx += DIRS[k][0]; dy += DIRS[k][1]; }
-  for (const k of touchDirs) { dx += k[0]; dy += k[1]; }
-  S.input.dx = Math.sign(dx); S.input.dy = Math.sign(dy);
-  S.input.work = held.has('Space') || held.has('KeyE') || touchWork ? 1 : 0;
+  panDir[0] = Math.sign(dx); panDir[1] = Math.sign(dy);
 }
 const typing = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'); };
 addEventListener('keydown', (e) => {
   if (!S.role || typing()) return;
-  if (DIRS[e.code] || e.code === 'Space' || e.code === 'KeyE') { held.add(e.code); recomputeDir(); e.preventDefault(); return; }
+  if (DIRS[e.code]) { held.add(e.code); recomputePan(); e.preventDefault(); return; }
   const n = '12345678'.indexOf(e.key);
   if (n >= 0) { selectBuild(BUILD_KEYS[n]); return; }
-  if (e.code === 'Escape') { S.sel = null; updateHint(); return; }
-  if ((e.code === 'KeyB' || e.code === 'Enter') && S.sel) {
-    const me = S.view && S.view.players.find((p) => p[0] === S.myId);
-    if (me) doBuild(S.sel, Math.floor(me[3]) + me[5], Math.floor(me[4]) + me[6]);
-    e.preventDefault();
-  }
+  if (e.code === 'KeyX' || e.key === '9') { selectBuild('X'); return; }
+  if (e.code === 'Escape') { S.sel = null; updateHint(); }
 });
-addEventListener('keyup', (e) => { held.delete(e.code); recomputeDir(); });
-addEventListener('blur', () => { held.clear(); recomputeDir(); });
+addEventListener('keyup', (e) => { held.delete(e.code); recomputePan(); });
+addEventListener('blur', () => { held.clear(); recomputePan(); });
 
 function tileAt(e) {
   const r = cv.getBoundingClientRect();
   const x = (e.clientX - r.left) * (VW / r.width) + cam.x, y = (e.clientY - r.top) * (VH / r.height) + cam.y;
   return [clamp(Math.floor(x / T), 0, W - 1), clamp(Math.floor(y / T), 0, H - 1)];
 }
-cv.addEventListener('pointermove', (e) => { S.hover = tileAt(e); });
-cv.addEventListener('pointerleave', () => { S.hover = null; });
+function setHover(tile) {
+  S.hover = tile;
+  S.input.hx = tile ? tile[0] : -1; S.input.hy = tile ? tile[1] : -1;
+}
+// Ziehen verschiebt die Karte, ein kurzer Klick baut
+let drag = null;
 cv.addEventListener('pointerdown', (e) => {
-  if (!S.sel) return;
-  const [x, y] = tileAt(e); S.hover = [x, y];
+  if (e.button === 2) return;
+  drag = { id: e.pointerId, x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, moved: false };
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove', (e) => {
+  if (drag && drag.id === e.pointerId) {
+    const r = cv.getBoundingClientRect(), sc = VW / r.width;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.hypot(dx, dy) > 6) drag.moved = true;
+    if (drag.moved) {
+      cam.x = clamp(drag.cx - dx * sc, 0, W * T - VW); cam.y = clamp(drag.cy - dy * sc, 0, H * T - VH);
+      return;
+    }
+  }
+  setHover(tileAt(e));
+});
+cv.addEventListener('pointerup', (e) => {
+  if (!drag || drag.id !== e.pointerId) return;
+  const wasDrag = drag.moved; drag = null;
+  if (wasDrag || !S.sel) return;
+  const [x, y] = tileAt(e); setHover([x, y]);
   doBuild(S.sel, x, y);
 });
+cv.addEventListener('pointercancel', () => { drag = null; });
+cv.addEventListener('pointerleave', (e) => { if (!drag) setHover(null); });
 cv.addEventListener('contextmenu', (e) => { e.preventDefault(); S.sel = null; updateHint(); });
 $('buildbar').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) selectBuild(b.dataset.k); });
 
-// Touch-Steuerung
-const touchDirs = new Set();
-let touchWork = false;
-if (matchMedia('(pointer: coarse)').matches) $('touch').hidden = false;
-for (const b of document.querySelectorAll('.pad button')) {
-  const d = b.dataset.d.split(',').map(Number);
-  const on = (e) => { e.preventDefault(); touchDirs.add(d); recomputeDir(); };
-  const off = () => { touchDirs.delete(d); recomputeDir(); };
-  b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
+// Tempo (nur Gastgeber)
+function setSpeed(n) {
+  if (S.role === 'host' && S.game) S.game.speed = n;
+  for (const b of $('speed').children) b.classList.toggle('sel', +b.dataset.s === n);
 }
-{
-  const b = $('t-work');
-  b.addEventListener('pointerdown', (e) => { e.preventDefault(); touchWork = true; recomputeDir(); });
-  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, () => { touchWork = false; recomputeDir(); });
-}
+$('speed').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setSpeed(+b.dataset.s); });
 
 // ---------------------------------------------------------------- Start, Knöpfe, Einladung
 function renderSaves() {

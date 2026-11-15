@@ -55,7 +55,7 @@ canvas { display: block; width: 100%; height: auto; background: #3c6b3a; border-
 .toast { background: rgba(20, 30, 22, .82); border-radius: 6px; padding: 4px 9px; font-size: 13px; animation: fade 6s forwards; }
 @keyframes fade { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
 .buildbar { display: flex; flex-wrap: wrap; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 0 0 10px 10px; padding: 8px; }
-.buildbar button { flex: 1 1 105px; background: #314536; color: var(--text); font-weight: 500; padding: 6px 6px; font-size: 12px; text-align: left; line-height: 1.25; position: relative; }
+.buildbar button { flex: 1 1 88px; background: #314536; color: var(--text); font-weight: 500; padding: 6px 6px; font-size: 12px; text-align: left; line-height: 1.25; position: relative; }
 .buildbar button .k { position: absolute; right: 6px; top: 4px; color: var(--muted); font-size: 11px; }
 .buildbar button b { display: block; font-size: 13px; }
 .buildbar button.sel { outline: 2px solid var(--accent); background: #4a5f3d; }
@@ -82,3 +82,7 @@ canvas { display: block; width: 100%; height: auto; background: #3c6b3a; border-
   .hud { font-size: 13px; gap: 4px 10px; }
   .hud .level { margin-left: 0; width: 100%; }
 }
+.speed { display: inline-flex; gap: 2px; }
+.speed button { background: #314536; color: var(--text); padding: 3px 8px; }
+.speed button.sel { background: var(--accent); color: #241a08; }
+.ver a { color: var(--muted); }

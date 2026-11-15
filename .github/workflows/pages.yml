@@ -27,8 +27,9 @@ jobs:
       - name: Version eintragen
         run: |
           V="${GITHUB_SHA::7}"
-          sed -i "s/__VERSION__/$V/g" index.html game.js
+          sed -i "s/__VERSION__/$V/g" index.html game.js iteration-1/index.html iteration-1/game.js
           echo "$V" > version.txt
+          echo "$V" > iteration-1/version.txt
       # Veröffentlicht das Spiel (Hauptordner)
       - uses: actions/upload-pages-artifact@v3
         with:

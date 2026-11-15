@@ -1,6 +1,6 @@
 # Lichtung
 
-Gemeinsam ein Dorf im Wald aufbauen, direkt im Browser. Allein oder mit Freunden über einen Einladungslink.
+Gemeinsam ein Dorf im Wald planen und bauen, direkt im Browser. Ein Aufbau-Strategiespiel mit Baumenü. Allein oder mit Freunden über einen Einladungslink.
 Mit einem ganz leichten Überlebens-Teil: Siedler brauchen Essen, im Winter Holz zum Heizen.
 
 **Spielen:** https://bunwichtig.github.io/Surmauf/
@@ -11,31 +11,37 @@ Mit einem ganz leichten Überlebens-Teil: Siedler brauchen Essen, im Winter Holz
 2. Unter dem Spielfeld steht der **Einladungslink**. Kopieren und an die anderen schicken.
 3. Die anderen öffnen den Link, geben ihren Namen ein und klicken **Dorf beitreten**. Das geht jederzeit, auch mitten im Spiel.
 
-Der Browser des Gastgebers rechnet das Dorf und muss offen bleiben. Die Verbindung läuft direkt von Browser zu Browser (WebRTC über PeerJS), genau wie bei BombRe. Es gibt keinen eigenen Server.
+Der Browser des Gastgebers rechnet das Dorf und muss offen bleiben. Die Verbindung läuft direkt von Browser zu Browser (WebRTC über PeerJS), genau w## Spielen
 
-## Spielen
-
-- **Laufen:** WASD oder Pfeiltasten. Auf dem Handy gibt es Tasten.
-- **Arbeiten:** Leertaste oder E gedrückt halten vor Baum (Holz), Stein (Stein) oder Beerenstrauch (Nahrung). Bäume und Sträucher wachsen nach, nur nicht im Winter.
-- **Bauen:** Gebäude unten wählen (oder 1 bis 8) und auf freie Wiese klicken. B baut direkt vor der Figur, Esc oder Rechtsklick bricht ab.
-- Alles landet im **gemeinsamen Vorrat**, alle bauen am selben Dorf.
+- **Bauen:** Gebäude unten wählen (oder Taste 1 bis 8) und auf freie Wiese klicken. 🧹 Abreißen (X) entfernt ein Gebäude und gibt die Hälfte der Kosten zurück. Esc oder Rechtsklick bricht ab.
+- **Karte verschieben:** mit Maus oder Finger ziehen, oder WASD und Pfeiltasten.
+- **Tempo:** Der Gastgeber kann 1×, 2× oder 4× einstellen.
+- Alle Mitspieler bauen am selben Dorf mit einem gemeinsamen Vorrat. Wo die anderen gerade hinzeigen, sieht man als farbigen Rahmen mit Namen.
+- Arbeitsgebäude ohne freien Siedler zeigen 💤, mit zu wenig Natur in der Nähe ⚠️. Fährt man mit der Maus über ein Gebäude, steht unten, was los ist.
 
 | Gebäude | Kosten | Wirkung | ab Stufe |
 |---|---|---|---|
 | 🔥 Feuerstelle | 5 Holz | Licht in der Nacht, ohne Feuer kommen keine Siedler | Lagerplatz |
 | 🛖 Hütte | 10 Holz | 2 Betten | Lagerplatz |
 | 🧺 Sammlerhütte | 8 Holz | 1 Siedler sammelt Beeren in der Nähe, bis +3 Nahrung/Tag | Lagerplatz |
-| 🪓 Holzfäller | 8 Holz, 3 Stein | bis +4 Holz/Tag, braucht Bäume in der Nähe | Siedlung |
-| 🌾 Acker | 6 Holz | +5 Nahrung/Tag, nicht im Winter | Siedlung |
+| 🪓 Holzfäller | 8 Holz | bis +4 Holz/Tag, braucht Bäume in der Nähe | Lagerplatz |
+| 🌾 Acker | 6 Holz | +5 Nahrung/Tag, nicht im Winter | Lagerplatz |
 | ⛏️ Steinbruch | 12 Holz | bis +3 Stein/Tag, braucht Felsen in der Nähe | Siedlung |
 | 🏠 Steinhaus | 10 Holz, 12 Stein | 4 Betten | Weiler |
 | ⛲ Dorfbrunnen | 20 Holz, 25 Stein | Ziel für die Stufe „Dorf“ | Weiler |
 
-**Siedler** ziehen mittags und morgens ein, wenn es eine Feuerstelle, ein freies Bett und genug Nahrung gibt. Sie arbeiten tagsüber in den Arbeitsgebäuden und gehen nachts heim.
+Ihr startet mit 40 Holz, 20 Nahrung und 3 Gründer-Siedlern. **Siedler** erledigen alle Arbeit. Weitere ziehen ein, wenn es eine Feuerstelle, ein freies Bett und genug Nahrung gibt. Jedes Arbeitsgebäude braucht einen Siedler ohne Arbeit.
 
-**Überleben (leicht):** Ein Tag dauert 2 Minuten, jede Jahreszeit 3 Tage. Jeden Morgen isst jeder Siedler 1 Nahrung. Im Winter wächst nichts, und je 2 Siedler brauchen 1 Holz zum Heizen. Wer zwei Tage hungert oder friert, zieht weg. Spieler selbst können nicht sterben.
+**Überleben (leicht):** Ein Tag dauert 2 Minuten, jede Jahreszeit 3 Tage. Jeden Morgen isst jeder Siedler 1 Nahrung. Im Winter wächst nichts, und je 2 Siedler brauchen 1 Holz zum Heizen. Wer zwei Tage hungert oder friert, zieht weg.
 
-**Stufen:** Lagerplatz → Siedlung (2 Siedler) → Weiler (6 Siedler) → Dorf (Brunnen und 10 Siedler). Jede Stufe schaltet Gebäude frei und bleibt erreicht.
+**Stufen:** Lagerplatz → Siedlung (5 Siedler) → Weiler (8 Siedler) → Dorf (Brunnen und 14 Siedler). Jede Stufe schaltet Gebäude frei und bleibt erreicht.
+
+## Iterationen
+
+- **Iteration 2 (aktuell):** Strategie mit Baumenü, ohne Spielfigur. Hauptordner.
+- **Iteration 1:** mit eigener Spielfigur, die läuft und von Hand sammelt. Spielbar unter https://bunwichtig.github.io/Surmauf/iteration-1/, Code im Branch `iteration-1` und im Ordner `iteration-1/`. Beide Versionen haben getrennte Räume und Spielstände.
+
+fe schaltet Gebäude frei und bleibt erreicht.
 
 ## Spielstand
 

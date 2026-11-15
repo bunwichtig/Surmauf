@@ -1,0 +1,1087 @@
+'use strict';
+// Lichtung – gemeinsam ein Dorf aufbauen. Mehrspieler-Technik wie in BombRe (siehe docs/online-multiplayer.md dort).
+
+const VERSION = '__VERSION__';
+const $ = (id) => document.getElementById(id);
+const LOCAL = new URLSearchParams(location.search).has('local');
+const PEER_PREFIX = 'lichtung-v1-';
+const SAVE_PREFIX = 'lichtung-save-';
+const W = 64, H = 48, T = 32;          // Karte in Feldern, Feldgröße in Pixeln
+const DAY_LEN = 120;                   // Sekunden pro Tag
+const NIGHT_FROM = 0.72;               // ab diesem Anteil des Tages ist Nacht
+const SEASONS = ['Frühling', 'Sommer', 'Herbst', 'Winter'];
+const DAYS_PER_SEASON = 3;
+const TICK = 1 / 60, SEND_EVERY = 3;
+const MAX_PLAYERS = 8;
+const COLORS = ['#e4572e', '#3b8ea5', '#f2c14e', '#b48ee0', '#5fad56', '#ef8bb4', '#f5f5f5', '#f78154'];
+const NAMES = ['Alma', 'Bruno', 'Clara', 'Dario', 'Elsa', 'Fiete', 'Greta', 'Hanno', 'Ida', 'Jori', 'Kaja', 'Lenz', 'Mira', 'Nils',
+  'Oda', 'Pit', 'Rike', 'Sven', 'Tilda', 'Ulf', 'Vera', 'Wim', 'Yara', 'Zeno', 'Anouk', 'Bela', 'Carlo', 'Dina', 'Emil', 'Frida'];
+
+// Gebäude: Buchstabe auf der Karte → Eigenschaften
+const BUILD = {
+  F: { name: 'Feuerstelle', icon: '🔥', cost: { wood: 5 }, level: 0, desc: 'Wärmt und spendet Licht. Ohne Feuer kommen keine Siedler.' },
+  H: { name: 'Hütte', icon: '🛖', cost: { wood: 10 }, level: 0, beds: 2, desc: 'Betten für 2 Siedler.' },
+  S: { name: 'Sammlerhütte', icon: '🧺', cost: { wood: 8 }, level: 0, job: 'food', rate: 3, near: 'Bb', desc: '1 Siedler sammelt Beeren in der Nähe, bis +3 Nahrung am Tag.' },
+  L: { name: 'Holzfäller', icon: '🪓', cost: { wood: 8, stone: 3 }, level: 1, job: 'wood', rate: 4, near: 'T', desc: '1 Siedler fällt Bäume in der Nähe, bis +4 Holz am Tag.' },
+  A: { name: 'Acker', icon: '🌾', cost: { wood: 6 }, level: 1, job: 'food', rate: 5, noWinter: true, walk: true, desc: '1 Siedler bestellt das Feld, +5 Nahrung am Tag. Nicht im Winter.' },
+  Q: { name: 'Steinbruch', icon: '⛏️', cost: { wood: 12 }, level: 1, job: 'stone', rate: 3, near: 'R', desc: '1 Siedler bricht Steine in der Nähe, bis +3 Stein am Tag.' },
+  M: { name: 'Steinhaus', icon: '🏠', cost: { wood: 10, stone: 12 }, level: 2, beds: 4, desc: 'Betten für 4 Siedler.' },
+  P: { name: 'Dorfbrunnen', icon: '⛲', cost: { wood: 20, stone: 25 }, level: 2, desc: 'Das Herz des Dorfes.' },
+};
+const BUILD_KEYS = 'FHSLAQMP';
+const RES_ICON = { wood: '🪵', stone: '🪨', food: '🍓' };
+
+const LEVELS = [
+  { name: 'Lagerplatz', goal: 'Feuerstelle und Hütte bauen, damit Siedler kommen', check: (g) => g.villagers.length >= 2 },
+  { name: 'Siedlung', goal: 'Auf 6 Bewohner wachsen', check: (g) => g.villagers.length >= 6 },
+  { name: 'Weiler', goal: 'Den Dorfbrunnen bauen und 10 Bewohner haben', check: (g) => g.villagers.length >= 10 && g.count('P') > 0 },
+  { name: 'Dorf', goal: 'Euer Dorf steht. Lasst es weiter wachsen!' },
+];
+
+// ---------------------------------------------------------------- Hilfen
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function slug(s) { return String(s).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40); }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+async function hashPw(room, pw) {
+  const text = 'lichtung|' + room + '|' + pw;
+  if (window.crypto && crypto.subtle) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  let h = 2166136261;
+  for (const c of text) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return 'f' + (h >>> 0).toString(16);
+}
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+function noise(seed, scale) {
+  const r = rng(seed), gw = Math.ceil(W / scale) + 2, gh = Math.ceil(H / scale) + 2;
+  const g = Array.from({ length: gw * gh }, r);
+  const s = (t) => t * t * (3 - 2 * t);
+  return (x, y) => {
+    const fx = x / scale, fy = y / scale, ix = Math.floor(fx), iy = Math.floor(fy), u = s(fx - ix), v = s(fy - iy);
+    const a = g[iy * gw + ix], b = g[iy * gw + ix + 1], c = g[(iy + 1) * gw + ix], d = g[(iy + 1) * gw + ix + 1];
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  };
+}
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+// ---------------------------------------------------------------- Karte
+const TILE_OK = '.TtRBb~' + BUILD_KEYS;
+const HP = { T: 3, R: 5, B: 3 };
+const YIELD = { T: 'wood', R: 'stone', B: 'food' };
+
+function genMap(seed) {
+  const n1 = noise(seed + 1, 7), n2 = noise(seed + 2, 5), n3 = noise(seed + 3, 10), r = rng(seed + 4);
+  const cx = W / 2, cy = H / 2, grid = [];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+    let c = '.';
+    if (n3(x, y) < 0.24 && d > 8) c = '~';
+    else if (n1(x, y) > 0.57 && d > 5) c = 'T';
+    else if (n2(x, y) > 0.72 && d > 6) c = 'R';
+    else if (d > 3.5 && r() < 0.03) c = 'B';
+    else if (d > 4 && r() < 0.03) c = 'T';
+    grid.push(c);
+  }
+  // Ein paar Bäume, Steine und Beeren sicher in Laufweite
+  const sprinkle = (c, n, dmin, dmax) => {
+    for (let k = 0, tries = 0; k < n && tries < 500; tries++) {
+      const a = r() * Math.PI * 2, d = dmin + r() * (dmax - dmin);
+      const x = Math.floor(cx + Math.cos(a) * d), y = Math.floor(cy + Math.sin(a) * d);
+      if (grid[y * W + x] === '.') { grid[y * W + x] = c; k++; }
+    }
+  };
+  sprinkle('T', 8, 5, 9); sprinkle('B', 5, 4, 8); sprinkle('R', 3, 6, 10);
+  return grid;
+}
+
+// ---------------------------------------------------------------- Spiellogik (weiß nichts vom Netzwerk)
+class Game {
+  constructor(save) {
+    this.players = [];
+    this.changes = [];
+    this.events = [];
+    this.evId = 0;
+    this.nearT = 0;
+    if (save) this.load(save);
+    else this.fresh();
+  }
+
+  fresh() {
+    this.vid = uid();
+    this.seed = (Math.random() * 1e9) | 0;
+    this.grid = genMap(this.seed);
+    this.hp = new Map(); this.regrow = new Map();
+    this.buildings = []; this.villagers = [];
+    this.res = { wood: 0, stone: 0, food: 12 };
+    this.day = 1; this.time = 0.05; this.prog = 0; this.level = 0; this.nextId = 1;
+    this.stats = {};
+  }
+
+  load(s) {
+    this.vid = s.vid; this.seed = s.seed; this.grid = s.grid.split('');
+    this.hp = new Map(s.hp); this.regrow = new Map(s.regrow);
+    this.buildings = s.buildings.map((b) => ({ ...b, worker: null, eff: 0 }));
+    this.villagers = s.villagers.map((v) => ({ ...v, home: null, job: null }));
+    this.res = { ...s.res }; this.day = s.day; this.time = s.time; this.prog = s.prog;
+    this.level = s.level; this.nextId = s.nextId; this.stats = s.stats;
+    this.assign();
+    this.nearT = 0;
+    for (const p of this.players) this.spawn(p);
+  }
+
+  toSave() {
+    return {
+      v: 1, vid: this.vid, seed: this.seed, prog: Math.floor(this.prog), day: this.day, time: +this.time.toFixed(4),
+      grid: this.grid.join(''), hp: [...this.hp], regrow: [...this.regrow].map(([i, t]) => [i, Math.round(t)]),
+      buildings: this.buildings.map((b) => ({ id: b.id, k: b.k, x: b.x, y: b.y })),
+      villagers: this.villagers.map((v) => ({ id: v.id, name: v.name, x: +v.x.toFixed(1), y: +v.y.toFixed(1), hungry: v.hungry, cold: v.cold })),
+      res: { wood: +this.res.wood.toFixed(2), stone: +this.res.stone.toFixed(2), food: +this.res.food.toFixed(2) },
+      level: this.level, nextId: this.nextId, stats: this.stats, savedAt: Date.now(),
+    };
+  }
+
+  get season() { return Math.floor((this.day - 1) / DAYS_PER_SEASON) % 4; }
+  get winter() { return this.season === 3; }
+  get night() { return this.time >= NIGHT_FROM; }
+  beds() { return this.buildings.reduce((n, b) => n + (BUILD[b.k].beds || 0), 0); }
+  count(k) { return this.buildings.filter((b) => b.k === k).length; }
+  tile(x, y) { return x < 0 || y < 0 || x >= W || y >= H ? '#' : this.grid[y * W + x]; }
+  setTile(i, c) { if (this.grid[i] !== c) { this.grid[i] = c; this.changes.push([i, c]); } }
+  event(text) { this.events.push([++this.evId, text]); if (this.events.length > 8) this.events.shift(); }
+  stat(name) { return this.stats[name] || (this.stats[name] = { g: 0, b: 0 }); }
+
+  solid(x, y) {
+    const c = this.tile(x, y);
+    if (c === '.' || c === 't' || c === 'A') return false;
+    return true;
+  }
+  blocked(x, y, r) {
+    if (x < r || y < r || x > W - r || y > H - r) return true;
+    for (const [ox, oy] of [[-r, -r], [r, -r], [-r, r], [r, r]]) if (this.solid(Math.floor(x + ox), Math.floor(y + oy))) return true;
+    return false;
+  }
+
+  spawn(p) {
+    // freien Platz nahe der Mitte suchen
+    for (let d = 0; d < 20; d++) for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * Math.PI * 2, x = Math.floor(W / 2 + Math.cos(a) * d) + 0.5, y = Math.floor(H / 2 + Math.sin(a) * d) + 0.5;
+      if (this.blocked(x, y, 0.32) || this.players.some((q) => q !== p && Math.hypot(q.x - x, q.y - y) < 1.5)) continue;
+      p.x = x; p.y = y; return;
+    }
+    p.x = W / 2; p.y = H / 2;
+  }
+
+  addPlayer(id, name) {
+    const used = new Set(this.players.map((p) => p.color));
+    const color = COLORS.find((c) => !used.has(c)) || COLORS[0];
+    const p = { id, name, color, x: 0, y: 0, dir: [0, 1], input: { dx: 0, dy: 0, work: 0 }, workT: 0, working: 0, moving: 0 };
+    this.spawn(p);
+    this.players.push(p);
+    this.stat(name);
+    this.event(name + ' ist auf der Lichtung angekommen.');
+    return p;
+  }
+  removePlayer(id) {
+    const p = this.players.find((q) => q.id === id);
+    this.players = this.players.filter((q) => q.id !== id);
+    if (p) this.event(p.name + ' ist gegangen.');
+  }
+
+  canAfford(k) { const c = BUILD[k].cost; return Object.keys(c).every((r) => Math.floor(this.res[r]) >= c[r]); }
+
+  // Bauen: liefert einen Fehlertext oder null
+  build(pid, k, x, y) {
+    const def = BUILD[k], p = this.players.find((q) => q.id === pid);
+    if (!def || !p) return 'Unbekannt.';
+    x |= 0; y |= 0;
+    if (def.level > this.level) return def.name + ' gibt es erst ab Stufe „' + LEVELS[def.level].name + '“.';
+    if (this.tile(x, y) !== '.') return 'Dort ist kein Platz. Nur auf freier Wiese bauen.';
+    if (!def.walk && this.players.some((q) => Math.abs(q.x - (x + 0.5)) < 0.85 && Math.abs(q.y - (y + 0.5)) < 0.85)) return 'Da steht jemand im Weg.';
+    if (!this.canAfford(k)) return 'Nicht genug Vorrat: ' + costText(def.cost) + '.';
+    for (const r in def.cost) this.res[r] -= def.cost[r];
+    const i = y * W + x;
+    this.setTile(i, k);
+    this.buildings.push({ id: this.nextId++, k, x, y, worker: null, eff: 0 });
+    this.stat(p.name).b++;
+    this.event(def.icon + ' ' + p.name + ' hat gebaut: ' + def.name + '.');
+    this.nearT = 0;
+    this.assign();
+    return null;
+  }
+
+  // Siedlern Betten und Arbeit zuteilen
+  assign() {
+    const byId = new Map(this.buildings.map((b) => [b.id, b]));
+    const occ = new Map();
+    for (const v of this.villagers) {
+      if (v.home && !byId.has(v.home)) v.home = null;
+      if (v.job && !byId.has(v.job)) v.job = null;
+      if (v.home) occ.set(v.home, (occ.get(v.home) || 0) + 1);
+    }
+    for (const b of this.buildings) b.worker = null;
+    for (const v of this.villagers) if (v.job) byId.get(v.job).worker = v.id;
+    for (const v of this.villagers) {
+      if (!v.home) {
+        const h = this.buildings.find((b) => BUILD[b.k].beds && (occ.get(b.id) || 0) < BUILD[b.k].beds);
+        if (h) { v.home = h.id; occ.set(h.id, (occ.get(h.id) || 0) + 1); }
+      }
+    }
+    for (const b of this.buildings) {
+      if (!BUILD[b.k].job || b.worker) continue;
+      const v = this.villagers.find((q) => !q.job);
+      if (v) { v.job = b.id; b.worker = v.id; }
+    }
+  }
+
+  updateNear() {
+    for (const b of this.buildings) {
+      const def = BUILD[b.k];
+      if (!def.near) { b.eff = 1; continue; }
+      let n = 0;
+      for (let y = b.y - 4; y <= b.y + 4; y++) for (let x = b.x - 4; x <= b.x + 4; x++) if (def.near.includes(this.tile(x, y))) n++;
+      b.eff = Math.min(1, n / 4);
+    }
+  }
+
+  step(dt) {
+    this.prog += dt;
+    const before = this.time;
+    this.time += dt / DAY_LEN;
+    if (this.time >= 1) { this.time -= 1; this.day++; this.dawn(); }
+    if (before < 0.4 && this.time >= 0.4) this.immigrate();
+
+    for (const p of this.players) this.stepPlayer(p, dt);
+
+    // Nachwachsen (nicht im Winter)
+    if (!this.winter) {
+      for (const [i, t] of this.regrow) {
+        const nt = t - dt;
+        if (nt > 0) { this.regrow.set(i, nt); continue; }
+        const x = i % W, y = (i / W) | 0, c = this.grid[i];
+        const occupied = this.players.some((p) => Math.floor(p.x) === x && Math.floor(p.y) === y);
+        if (occupied) continue;
+        this.regrow.delete(i);
+        if (c === 't') this.setTile(i, 'T');
+        else if (c === 'b') this.setTile(i, 'B');
+      }
+    }
+
+    if ((this.nearT -= dt) <= 0) { this.nearT = 2; this.updateNear(); this.checkLevel(); }
+
+    // Siedler laufen und arbeiten
+    const byId = new Map(this.buildings.map((b) => [b.id, b]));
+    const fire = this.buildings.find((b) => b.k === 'F');
+    for (const v of this.villagers) {
+      let tx, ty;
+      const job = v.job && byId.get(v.job), home = v.home && byId.get(v.home);
+      if (this.night) { const h = home || fire; if (h) { tx = h.x + 0.5; ty = h.y + 1.1; } }
+      else if (job) { tx = job.x + 0.5 + Math.sin(this.prog * 0.7 + v.id) * 0.6; ty = job.y + 1.0 + Math.cos(this.prog * 0.5 + v.id) * 0.3; }
+      else if (fire) { tx = fire.x + 0.5 + Math.cos(v.id * 1.7 + this.prog * 0.1) * 2; ty = fire.y + 0.5 + Math.sin(v.id * 1.7 + this.prog * 0.1) * 2; }
+      if (tx === undefined) { tx = W / 2; ty = H / 2; }
+      const dx = tx - v.x, dy = ty - v.y, d = Math.hypot(dx, dy);
+      v.walk = d > 0.15;
+      if (v.walk) { const s = Math.min(d, 2.2 * dt); v.x += (dx / d) * s; v.y += (dy / d) * s; }
+      if (job && !this.night && d < 1.5) {
+        const def = BUILD[job.k];
+        if (!(def.noWinter && this.winter)) this.res[def.job] += def.rate * job.eff * dt / (DAY_LEN * NIGHT_FROM);
+        v.working = 1;
+      } else v.working = 0;
+    }
+  }
+
+  stepPlayer(p, dt) {
+    let { dx, dy } = p.input;
+    p.moving = dx || dy ? 1 : 0;
+    if (p.moving) {
+      p.dir = [dx, dy];
+      const sp = 4.2 * (dx && dy ? 0.7071 : 1);
+      const nx = p.x + dx * sp * dt; if (!this.blocked(nx, p.y, 0.32)) p.x = nx;
+      const ny = p.y + dy * sp * dt; if (!this.blocked(p.x, ny, 0.32)) p.y = ny;
+    }
+    p.working = 0;
+    if (!p.input.work) { p.workT = 0; return; }
+    // nächstes Rohstoff-Feld in Blickrichtung suchen
+    const fx = p.x + p.dir[0] * 0.6, fy = p.y + p.dir[1] * 0.6;
+    let best = -1, bd = 1.25;
+    for (let y = Math.floor(p.y) - 1; y <= Math.floor(p.y) + 1; y++) for (let x = Math.floor(p.x) - 1; x <= Math.floor(p.x) + 1; x++) {
+      if (!YIELD[this.tile(x, y)]) continue;
+      const d = Math.hypot(x + 0.5 - fx, y + 0.5 - fy);
+      if (d < bd) { bd = d; best = y * W + x; }
+    }
+    if (best < 0) { p.workT = 0; return; }
+    p.working = 1;
+    p.workAt = best;
+    p.workT += dt;
+    if (p.workT < 0.6) return;
+    p.workT = 0;
+    const c = this.grid[best], r = YIELD[c];
+    this.res[r] += 1;
+    this.stat(p.name).g++;
+    const hp = (this.hp.has(best) ? this.hp.get(best) : HP[c]) - 1;
+    if (hp > 0) { this.hp.set(best, hp); return; }
+    this.hp.delete(best);
+    if (c === 'T') { this.setTile(best, 't'); this.regrow.set(best, 200 + Math.random() * 100); }
+    else if (c === 'B') { this.setTile(best, 'b'); this.regrow.set(best, 70 + Math.random() * 40); }
+    else if (c === 'R') this.setTile(best, '.');
+  }
+
+  // Morgens: essen, heizen, wer zu lange hungert oder friert, zieht weg
+  dawn() {
+    if ((this.day - 1) % DAYS_PER_SEASON === 0) {
+      this.event(['🌱', '☀️', '🍂', '❄️'][this.season] + ' Es wird ' + SEASONS[this.season] + '.' + (this.winter ? ' Jetzt wächst nichts, und die Häuser brauchen Holz zum Heizen.' : ''));
+    }
+    const n = this.villagers.length;
+    if (!n) { this.immigrate(); return; }
+    if (this.res.food >= n) { this.res.food -= n; for (const v of this.villagers) v.hungry = 0; }
+    else {
+      let left = Math.floor(this.res.food); this.res.food -= left;
+      for (const v of this.villagers) { if (left > 0) { left--; v.hungry = 0; } else v.hungry++; }
+      this.event('🍽️ Nicht genug Nahrung! Einige Siedler hungern.');
+    }
+    if (this.winter) {
+      const need = Math.ceil(n / 2);
+      if (this.res.wood >= need) { this.res.wood -= need; for (const v of this.villagers) v.cold = 0; this.event('🪵 Die Häuser wurden mit ' + need + ' Holz geheizt.'); }
+      else { this.res.wood = 0; for (const v of this.villagers) v.cold++; this.event('🥶 Zu wenig Holz zum Heizen! Die Siedler frieren.'); }
+    } else for (const v of this.villagers) v.cold = 0;
+    const leaving = this.villagers.filter((v) => v.hungry >= 2 || v.cold >= 2 || !v.home);
+    for (const v of leaving) this.event(v.name + ' hat das Dorf verlassen' + (v.hungry >= 2 ? ' (Hunger).' : v.cold >= 2 ? ' (Kälte).' : ' (kein Bett).'));
+    if (leaving.length) { this.villagers = this.villagers.filter((v) => !leaving.includes(v)); this.assign(); }
+    this.immigrate();
+  }
+
+  immigrate() {
+    const n = this.villagers.length;
+    if (!this.count('F')) return;
+    if (this.beds() <= n) return;
+    if (this.res.food < n + 3) return;
+    if (this.winter && this.res.wood < Math.ceil((n + 1) / 2)) return;
+    const used = new Set(this.villagers.map((v) => v.name));
+    const free = NAMES.filter((x) => !used.has(x));
+    const name = free.length ? free[(Math.random() * free.length) | 0] : 'Siedler ' + this.nextId;
+    const a = Math.random() * Math.PI * 2;
+    this.villagers.push({ id: this.nextId++, name, x: clamp(W / 2 + Math.cos(a) * 18, 1, W - 1), y: clamp(H / 2 + Math.sin(a) * 18, 1, H - 1), hungry: 0, cold: 0, home: null, job: null });
+    this.assign();
+    this.event('🏡 ' + name + ' ist ins Dorf gezogen.');
+  }
+
+  checkLevel() {
+    while (this.level < LEVELS.length - 1 && LEVELS[this.level].check(this)) {
+      this.level++;
+      const unlocked = BUILD_KEYS.split('').filter((k) => BUILD[k].level === this.level).map((k) => BUILD[k].name);
+      this.event('⭐ Neue Stufe: ' + LEVELS[this.level].name + '!' + (unlocked.length ? ' Neu: ' + unlocked.join(', ') + '.' : ''));
+    }
+  }
+
+  snapshot(withChanges) {
+    const s = {
+      t: 'state', day: this.day, time: +this.time.toFixed(4), level: this.level,
+      res: [Math.floor(this.res.wood), Math.floor(this.res.stone), Math.floor(this.res.food)],
+      pop: this.villagers.length, beds: this.beds(),
+      players: this.players.map((p) => [p.id, p.name, p.color, +p.x.toFixed(2), +p.y.toFixed(2), p.dir[0], p.dir[1], p.moving, p.working ? p.workAt : -1]),
+      vill: this.villagers.map((v) => [+v.x.toFixed(2), +v.y.toFixed(2), v.working ? 1 : 0, v.hungry || v.cold ? 1 : 0]),
+      ev: this.events,
+      stats: Object.entries(this.stats).sort((a, b) => (b[1].g + b[1].b * 5) - (a[1].g + a[1].b * 5)).slice(0, 12),
+    };
+    if (withChanges) { s.chg = this.changes; this.changes = []; }
+    return s;
+  }
+}
+
+function costText(c) { return Object.keys(c).map((r) => c[r] + ' ' + RES_ICON[r]).join(' '); }
+
+// Spielstand prüfen (kommt auch von Mitspielern, also nichts ungeprüft übernehmen)
+function cleanSave(s) {
+  try {
+    if (!s || s.v !== 1 || typeof s.grid !== 'string' || s.grid.length !== W * H) return null;
+    for (const c of s.grid) if (!TILE_OK.includes(c)) return null;
+    const num = (v, a, b) => (typeof v === 'number' && isFinite(v) ? clamp(v, a, b) : a);
+    const idx = (i) => Number.isInteger(i) && i >= 0 && i < W * H;
+    const buildings = (Array.isArray(s.buildings) ? s.buildings : []).slice(0, 2000)
+      .filter((b) => b && BUILD[b.k] && Number.isInteger(b.x) && Number.isInteger(b.y) && s.grid[b.y * W + b.x] === b.k)
+      .map((b) => ({ id: num(b.id, 1, 1e9) | 0, k: b.k, x: b.x, y: b.y }));
+    const villagers = (Array.isArray(s.villagers) ? s.villagers : []).slice(0, 300).filter((v) => v && typeof v.name === 'string')
+      .map((v) => ({ id: num(v.id, 1, 1e9) | 0, name: v.name.slice(0, 16), x: num(v.x, 0, W), y: num(v.y, 0, H), hungry: num(v.hungry, 0, 9) | 0, cold: num(v.cold, 0, 9) | 0 }));
+    const stats = {};
+    if (s.stats && typeof s.stats === 'object') for (const [k, v] of Object.entries(s.stats).slice(0, 60)) {
+      if (v && typeof v === 'object') stats[String(k).slice(0, 12)] = { g: num(v.g, 0, 1e7) | 0, b: num(v.b, 0, 1e6) | 0 };
+    }
+    const pairs = (a, max) => (Array.isArray(a) ? a : []).filter((e) => Array.isArray(e) && idx(e[0])).map((e) => [e[0], num(e[1], 0, max)]);
+    const res = s.res || {};
+    const ids = [...buildings.map((b) => b.id), ...villagers.map((v) => v.id)];
+    return {
+      v: 1, vid: String(s.vid || uid()).slice(0, 24), seed: num(s.seed, 0, 1e9) | 0, prog: num(s.prog, 0, 1e9), day: num(s.day, 1, 1e6) | 0,
+      time: num(s.time, 0, 0.999), grid: s.grid, hp: pairs(s.hp, 9), regrow: pairs(s.regrow, 1000), buildings, villagers,
+      res: { wood: num(res.wood, 0, 1e7), stone: num(res.stone, 0, 1e7), food: num(res.food, 0, 1e7) },
+      level: num(s.level, 0, LEVELS.length - 1) | 0, nextId: Math.max(num(s.nextId, 1, 1e9) | 0, ...ids.map((i) => i + 1), 1), stats,
+      savedAt: num(s.savedAt, 0, 1e15),
+    };
+  } catch (e) { return null; }
+}
+
+// ---------------------------------------------------------------- Speichern im Browser
+function loadSave(room) {
+  try { return cleanSave(JSON.parse(localStorage.getItem(SAVE_PREFIX + room))); } catch (e) { return null; }
+}
+function storeSave(room, data) {
+  try { localStorage.setItem(SAVE_PREFIX + room, JSON.stringify(data)); } catch (e) {}
+}
+function listSaves() {
+  const out = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(SAVE_PREFIX)) continue;
+      try { const s = JSON.parse(localStorage.getItem(k)); out.push({ room: k.slice(SAVE_PREFIX.length), day: s.day | 0, pop: (s.villagers || []).length, level: s.level | 0, at: s.savedAt || 0 }); } catch (e) {}
+    }
+  } catch (e) {}
+  return out.sort((a, b) => b.at - a.at);
+}
+
+// ---------------------------------------------------------------- Transport (wie BombRe)
+function wrapPeerConn(c) {
+  const conn = { send: (o) => { if (c.open) c.send(o); }, close: () => c.close(), onData: null, onClose: null };
+  c.on('data', (d) => conn.onData && conn.onData(d));
+  c.on('close', () => conn.onClose && conn.onClose());
+  c.on('error', () => conn.onClose && conn.onClose());
+  return conn;
+}
+const Net = {
+  host(room, onConn) {
+    return new Promise((resolve, reject) => {
+      if (LOCAL) return resolve(localHost(room, onConn));
+      if (!window.Peer) return reject(new Error('Netzwerk-Bibliothek konnte nicht geladen werden.'));
+      const peer = new Peer(PEER_PREFIX + room);
+      peer.on('open', () => resolve({ close: () => peer.destroy() }));
+      peer.on('connection', (c) => c.on('open', () => onConn(wrapPeerConn(c))));
+      peer.on('error', (e) => {
+        if (e.type === 'unavailable-id') reject(new Error('Dieses Dorf ist schon geöffnet. Tritt bei oder wähle einen anderen Namen.'));
+        else reject(new Error('Verbindungsfehler: ' + e.type));
+      });
+    });
+  },
+  join(room) {
+    return new Promise((resolve, reject) => {
+      if (LOCAL) return resolve(localJoin(room));
+      if (!window.Peer) return reject(new Error('Netzwerk-Bibliothek konnte nicht geladen werden.'));
+      const peer = new Peer();
+      let done = false;
+      const timer = setTimeout(() => { if (!done) { done = true; peer.destroy(); reject(new Error('Keine Antwort vom Gastgeber.')); } }, 15000);
+      peer.on('open', () => {
+        const c = peer.connect(PEER_PREFIX + room, { reliable: true });
+        c.on('open', () => {
+          if (done) return; done = true; clearTimeout(timer);
+          const conn = wrapPeerConn(c);
+          const close = conn.close; conn.close = () => { close(); peer.destroy(); };
+          resolve(conn);
+        });
+      });
+      peer.on('error', (e) => {
+        if (done) return; done = true; clearTimeout(timer); peer.destroy();
+        reject(new Error(e.type === 'peer-unavailable' ? 'Dieses Dorf ist gerade nicht geöffnet. Prüfe den Namen oder öffne es selbst.' : 'Verbindungsfehler: ' + e.type));
+      });
+    });
+  },
+};
+function localHost(room, onConn) {
+  const bc = new BroadcastChannel('li-' + room);
+  const conns = new Map();
+  bc.onmessage = ({ data: m }) => {
+    if (m.to !== 'host') return;
+    if (m.hello) {
+      const conn = { send: (o) => bc.postMessage({ to: m.from, d: o }), close: () => { bc.postMessage({ to: m.from, bye: 1 }); conns.delete(m.from); }, onData: null, onClose: null };
+      conns.set(m.from, conn); onConn(conn);
+      bc.postMessage({ to: m.from, ok: 1 });
+    } else if (m.bye) { const c = conns.get(m.from); conns.delete(m.from); c && c.onClose && c.onClose(); }
+    else { const c = conns.get(m.from); c && c.onData && c.onData(m.d); }
+  };
+  return { close: () => { for (const [id] of conns) bc.postMessage({ to: id, bye: 1 }); bc.close(); } };
+}
+function localJoin(room) {
+  return new Promise((resolve, reject) => {
+    const bc = new BroadcastChannel('li-' + room);
+    const me = Math.random().toString(36).slice(2);
+    const conn = { send: (o) => bc.postMessage({ to: 'host', from: me, d: o }), close: () => { bc.postMessage({ to: 'host', from: me, bye: 1 }); bc.close(); }, onData: null, onClose: null };
+    const timer = setTimeout(() => { bc.close(); reject(new Error('Dieses Dorf ist gerade nicht geöffnet.')); }, 1500);
+    bc.onmessage = ({ data: m }) => {
+      if (m.to !== me) return;
+      if (m.ok) { clearTimeout(timer); resolve(conn); }
+      else if (m.bye) { conn.onClose && conn.onClose(); }
+      else conn.onData && conn.onData(m.d);
+    };
+    bc.postMessage({ to: 'host', from: me, hello: 1 });
+  });
+}
+
+// ---------------------------------------------------------------- Zustand
+const S = {
+  role: null, solo: false, room: '', pw: '', pwHash: '', myId: null, game: null, hostNet: null, conns: new Map(), conn: null,
+  view: null, grid: null, disp: new Map(), input: { dx: 0, dy: 0, work: 0 }, lastSent: '', sel: null, hover: null, seenEv: 0,
+};
+let loopId = 0;
+const broadcast = (msg) => { for (const c of S.conns.values()) c.send(msg); };
+
+function readForm(needPw) {
+  const name = ($('in-name').value.trim() || 'Gast').slice(0, 12);
+  const room = slug($('in-room').value), pw = $('in-pass').value;
+  if (needPw && (!room || !pw)) { startMsg('Bitte Dorfname und Passwort eingeben.', true); return null; }
+  try { localStorage.setItem('lichtung-name', name); } catch (e) {}
+  return { name, room, pw };
+}
+function startMsg(t, err) { $('start-msg').textContent = t || ''; $('start-msg').classList.toggle('err', !!err); }
+
+// ---------------------------------------------------------------- Gastgeber
+async function hostRoom(solo) {
+  const f = solo ? { ...readForm(false), room: 'allein', pw: '' } : readForm(true);
+  if (!f) return;
+  startMsg(solo ? '' : 'Öffne das Dorf …');
+  try {
+    Object.assign(S, { role: 'host', solo, room: f.room, pw: f.pw, myId: 'host', conns: new Map() });
+    S.pwHash = solo ? '' : await hashPw(f.room, f.pw);
+    S.game = new Game(loadSave(f.room));
+    S.game.addPlayer('host', f.name);
+    S.grid = S.game.grid;
+    if (!solo) S.hostNet = await Net.host(f.room, onClientConnect);
+    enterGame();
+    runHostLoop();
+  } catch (e) { S.role = null; S.game = null; startMsg(e.message, true); }
+}
+
+function sendMap(conn) { conn.send({ t: 'map', grid: S.game.grid.join('') }); }
+function saveNow() {
+  if (S.role !== 'host' || !S.game) return;
+  const data = S.game.toSave();
+  storeSave(S.room, data);
+  broadcast({ t: 'save', data });
+}
+
+function onClientConnect(conn) {
+  let pid = null, name = '', askedSave = false;
+  const timeout = setTimeout(() => { if (!pid) conn.close(); }, 10000);
+  conn.onData = (m) => {
+    if (!m || typeof m !== 'object' || S.role !== 'host') return;
+    const g = S.game;
+    if (!pid) {
+      if (m.t !== 'join') return;
+      clearTimeout(timeout);
+      let reason = null;
+      if (m.pw !== S.pwHash) reason = 'Falsches Passwort.';
+      else if (g.players.length >= MAX_PLAYERS) reason = 'Das Dorf ist voll (maximal ' + MAX_PLAYERS + ' Spieler).';
+      if (reason) { conn.send({ t: 'reject', reason }); setTimeout(() => conn.close(), 300); return; }
+      pid = 'p' + Math.random().toString(36).slice(2, 8);
+      name = String(m.name || 'Gast').slice(0, 12);
+      if (g.players.some((p) => p.name === name)) name = (name.slice(0, 10) + ' ' + (g.players.length + 1));
+      g.addPlayer(pid, name);
+      S.conns.set(pid, conn);
+      conn.send({ t: 'welcome', id: pid });
+      sendMap(conn);
+      conn.send({ t: 'save', data: g.toSave() });
+      // Hat der Mitspieler einen neueren Stand dieses Dorfes? Dann übernehmen.
+      const meta = m.save;
+      if (meta && typeof meta.prog === 'number' && meta.prog > g.prog + 10 && (meta.vid === g.vid || g.buildings.length === 0)) {
+        askedSave = true; conn.send({ t: 'needsave' });
+      }
+      return;
+    }
+    if (m.t === 'input') {
+      const p = g.players.find((q) => q.id === pid);
+      if (p) p.input = { dx: Math.sign(m.dx) | 0, dy: Math.sign(m.dy) | 0, work: m.work ? 1 : 0 };
+    } else if (m.t === 'build') {
+      const err = g.build(pid, String(m.k), m.x | 0, m.y | 0);
+      if (err) conn.send({ t: 'info', text: err });
+    } else if (m.t === 'savedata' && askedSave) {
+      askedSave = false;
+      const s = cleanSave(m.data);
+      if (s && s.prog > g.prog + 10 && (s.vid === g.vid || g.buildings.length === 0)) {
+        g.load(s);
+        S.grid = g.grid; g.changes = [];
+        g.event('📜 ' + name + ' hat den neueren Spielstand mitgebracht (Tag ' + s.day + ').');
+        for (const c of S.conns.values()) sendMap(c);
+        saveNow();
+      }
+    }
+  };
+  conn.onClose = () => {
+    if (!pid) return;
+    S.conns.delete(pid);
+    if (S.game) S.game.removePlayer(pid);
+    pid = null;
+  };
+}
+
+function runHostLoop() {
+  const id = ++loopId;
+  let last = performance.now(), acc = 0, n = 0, saveT = 0;
+  const tick = (now) => {
+    const dt = Math.min(0.25, (now - last) / 1000); last = now; acc += dt;
+    const g = S.game;
+    const me = g.players.find((p) => p.id === 'host'); if (me) me.input = { ...S.input };
+    while (acc >= TICK) {
+      g.step(TICK); acc -= TICK;
+      if (++n % SEND_EVERY === 0 && S.conns.size) broadcast(g.snapshot(true));
+      else if (!S.conns.size) g.changes = [];
+    }
+    if ((saveT += dt) > 15) { saveT = 0; saveNow(); }
+  };
+  const frame = (now) => {
+    if (id !== loopId || S.role !== 'host') return;
+    tick(now);
+    S.view = S.game.snapshot(false);
+    draw(S.view, true);
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+  const bg = setInterval(() => {
+    if (id !== loopId || S.role !== 'host') return clearInterval(bg);
+    if (document.hidden) tick(performance.now());
+  }, 50);
+}
+
+// ---------------------------------------------------------------- Mitspieler
+async function joinRoom() {
+  const f = readForm(true); if (!f) return;
+  startMsg('Verbinde …');
+  try {
+    const conn = await Net.join(f.room);
+    Object.assign(S, { role: 'client', solo: false, room: f.room, pw: f.pw, conn });
+    const pw = await hashPw(f.room, f.pw);
+    const pending = [];
+    const mine = loadSave(f.room);
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Keine Antwort vom Gastgeber.')), 10000);
+      conn.onData = (m) => {
+        if (m.t === 'welcome') { clearTimeout(timer); S.myId = m.id; resolve(); }
+        else if (m.t === 'reject') { clearTimeout(timer); reject(new Error(m.reason)); }
+        else pending.push(m);
+      };
+      conn.onClose = () => { clearTimeout(timer); reject(new Error('Verbindung getrennt.')); };
+      conn.send({ t: 'join', name: f.name, pw, save: mine ? { vid: mine.vid, prog: mine.prog } : null });
+    });
+    conn.onData = onHostMessage;
+    conn.onClose = () => { if (S.role === 'client') leave('Der Gastgeber hat das Dorf geschlossen. Euer Stand ist auch in deinem Browser gespeichert.'); };
+    for (const m of pending) onHostMessage(m);
+    enterGame();
+    runClientLoop();
+  } catch (e) {
+    if (S.conn) S.conn.close();
+    S.role = null; S.conn = null;
+    startMsg(e.message, true);
+  }
+}
+
+function onHostMessage(m) {
+  if (!m || typeof m !== 'object') return;
+  if (m.t === 'map' && typeof m.grid === 'string' && m.grid.length === W * H) S.grid = m.grid.split('');
+  else if (m.t === 'state') {
+    if (S.grid && Array.isArray(m.chg)) for (const [i, c] of m.chg) if (i >= 0 && i < W * H && TILE_OK.includes(c)) S.grid[i] = c;
+    S.view = m;
+  } else if (m.t === 'save') { const s = cleanSave(m.data); if (s) storeSave(S.room, s); }
+  else if (m.t === 'needsave') { const s = loadSave(S.room); if (s) S.conn.send({ t: 'savedata', data: s }); }
+  else if (m.t === 'info') toast(String(m.text).slice(0, 200));
+}
+
+function runClientLoop() {
+  const id = ++loopId;
+  const frame = () => {
+    if (id !== loopId || S.role !== 'client') return;
+    const key = S.input.dx + ',' + S.input.dy + ',' + S.input.work;
+    if (key !== S.lastSent) { S.lastSent = key; S.conn.send({ t: 'input', ...S.input }); }
+    if (S.view && S.grid) draw(S.view, false);
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+  const iv = setInterval(() => {
+    if (id !== loopId || S.role !== 'client') return clearInterval(iv);
+    S.conn && S.conn.send({ t: 'input', ...S.input });
+  }, 250);
+}
+
+// ---------------------------------------------------------------- Gemeinsam
+function leave(reason) {
+  loopId++;
+  if (S.role === 'host') {
+    saveNow();
+    for (const c of S.conns.values()) c.close();
+    S.hostNet && S.hostNet.close();
+  } else if (S.conn) { const c = S.conn; S.conn = null; c.close(); }
+  Object.assign(S, { role: null, game: null, hostNet: null, conns: new Map(), conn: null, view: null, grid: null, myId: null, sel: null, seenEv: 0 });
+  S.disp.clear();
+  $('screen-start').hidden = false; $('screen-game').hidden = true;
+  renderSaves();
+  startMsg(reason || '');
+}
+
+function doBuild(k, x, y) {
+  if (S.role === 'host') { const err = S.game.build('host', k, x, y); if (err) toast(err); }
+  else if (S.conn) S.conn.send({ t: 'build', k, x, y });
+}
+
+function inviteLink() {
+  const p = new URLSearchParams({ dorf: S.room });
+  if ($('inv-pw').checked && S.pw) p.set('pw', S.pw);
+  return location.origin + location.pathname + (LOCAL ? '?local' : '') + '#' + p.toString();
+}
+
+function enterGame() {
+  $('screen-start').hidden = true; $('screen-game').hidden = false;
+  startMsg('');
+  $('invite-panel').hidden = S.role !== 'host' || S.solo;
+  if (!$('invite-panel').hidden) $('inv-link').value = inviteLink();
+  $('role-note').textContent = S.solo ? 'Allein-Dorf, gespeichert in diesem Browser.'
+    : S.role === 'host' ? 'Dorf „' + S.room + '“. Wird alle 15 Sekunden gespeichert.'
+      : 'Du bist Gast im Dorf „' + S.room + '“. Eine Kopie wird in deinem Browser gespeichert.';
+  renderBuildbar();
+  try { if (navigator.wakeLock && S.role === 'host') navigator.wakeLock.request('screen').catch(() => {}); } catch (e) {}
+}
+
+function toast(text) {
+  const el = document.createElement('div');
+  el.className = 'toast'; el.textContent = text;
+  $('toasts').appendChild(el);
+  while ($('toasts').children.length > 5) $('toasts').firstChild.remove();
+  setTimeout(() => el.remove(), 6000);
+}
+
+// ---------------------------------------------------------------- Oberfläche
+function renderBuildbar() {
+  $('buildbar').innerHTML = BUILD_KEYS.split('').map((k, i) => {
+    const d = BUILD[k];
+    return `<button data-k="${k}" title="${esc(d.desc)}"><span class="k">${i + 1}</span><b>${d.icon} ${esc(d.name)}</b><span class="c">${costText(d.cost)}</span></button>`;
+  }).join('');
+}
+function selectBuild(k) {
+  S.sel = S.sel === k ? null : k;
+  updateHint();
+}
+function updateHint() {
+  const v = S.view;
+  for (const b of $('buildbar').children) b.classList.toggle('sel', b.dataset.k === S.sel);
+  if (!S.sel) { $('build-hint').textContent = 'Halte Leertaste vor Bäumen, Steinen und Beeren. Wähle ein Gebäude, um zu bauen.'; return; }
+  const d = BUILD[S.sel];
+  const locked = v && d.level > v.level;
+  $('build-hint').textContent = d.icon + ' ' + d.name + ': ' + d.desc + (locked ? ' (Ab Stufe „' + LEVELS[d.level].name + '“.)' : ' Klicke auf freie Wiese oder drücke B. Esc bricht ab.');
+}
+
+let hudT = 0;
+function updateHud(v) {
+  const now = performance.now();
+  if (now - hudT < 200) return;
+  hudT = now;
+  const [w, s, f] = v.res;
+  $('r-wood').textContent = w; $('r-stone').textContent = s; $('r-food').textContent = f;
+  $('r-pop').textContent = v.pop + ' / ' + v.beds;
+  $('r-food').parentElement.classList.toggle('low', f < v.pop);
+  const season = Math.floor((v.day - 1) / DAYS_PER_SEASON) % 4;
+  $('r-wood').parentElement.classList.toggle('low', season === 3 && w < Math.ceil(v.pop / 2));
+  $('c-day').textContent = 'Tag ' + v.day;
+  $('c-season').textContent = ['🌱', '☀️', '🍂', '❄️'][season] + ' ' + SEASONS[season];
+  $('c-bar').style.width = (v.time * 100).toFixed(1) + '%';
+  $('c-bar').parentElement.classList.toggle('night', v.time >= NIGHT_FROM);
+  $('l-name').textContent = '⭐ ' + LEVELS[v.level].name;
+  $('l-goal').textContent = 'Ziel: ' + LEVELS[v.level].goal;
+  for (const b of $('buildbar').children) {
+    const d = BUILD[b.dataset.k];
+    b.classList.toggle('locked', d.level > v.level);
+    const c = d.cost;
+    b.classList.toggle('poor', (c.wood || 0) > w || (c.stone || 0) > s);
+  }
+  // Ereignisse als Einblendung
+  for (const [id, text] of v.ev || []) if (id > S.seenEv) { S.seenEv = id; toast(text); }
+  // Bewohner-Liste
+  const online = new Set(v.players.map((p) => p[1]));
+  const colorOf = new Map(v.players.map((p) => [p[1], p[2]]));
+  const html = (v.stats || []).map(([name, st]) =>
+    `<li><span class="dot" style="background:${online.has(name) ? colorOf.get(name) : '#555'}"></span>${esc(name)}${v.players.some((p) => p[0] === S.myId && p[1] === name) ? ' (du)' : ''}<span class="sm">${st.g} gesammelt · ${st.b} gebaut</span></li>`).join('')
+    + `<li><span class="dot" style="background:#c9b07a"></span>${v.pop} Siedler<span class="sm">${v.beds} Betten</span></li>`;
+  if ($('people').innerHTML !== html) $('people').innerHTML = html;
+  if (!updateHud.hinted) { updateHud.hinted = true; updateHint(); }
+}
+
+// ---------------------------------------------------------------- Zeichnen
+const cv = $('cv'), ctx = cv.getContext('2d');
+const VW = cv.width, VH = cv.height;
+const light = document.createElement('canvas'); light.width = VW; light.height = VH;
+const lctx = light.getContext('2d');
+let cam = { x: 0, y: 0 };
+
+function grassColor(season, x, y) {
+  const n = ((x * 73856093) ^ (y * 19349663)) & 3;
+  if (season === 3) return ['#dfe6e8', '#d8e0e3', '#e6ecee', '#d3dcdf'][n];
+  if (season === 2) return ['#7a8f42', '#748a3f', '#80954a', '#6f853c'][n];
+  return ['#5c9a45', '#58953f', '#61a04a', '#55913c'][n];
+}
+
+function draw(v, isHost) {
+  const grid = S.grid; if (!grid) return;
+  updateHud(v);
+  const season = Math.floor((v.day - 1) / DAYS_PER_SEASON) % 4, winter = season === 3;
+  const t = performance.now() / 1000;
+  // geglättete Positionen
+  const shown = [];
+  for (const p of v.players) {
+    let d = S.disp.get(p[0]);
+    if (!d || isHost || Math.hypot(d.x - p[3], d.y - p[4]) > 3) d = { x: p[3], y: p[4] };
+    else { d.x += (p[3] - d.x) * 0.35; d.y += (p[4] - d.y) * 0.35; }
+    S.disp.set(p[0], d);
+    shown.push({ p, d });
+  }
+  const me = shown.find((s) => s.p[0] === S.myId);
+  if (me) {
+    cam.x = clamp(me.d.x * T - VW / 2, 0, W * T - VW);
+    cam.y = clamp(me.d.y * T - VH / 2, 0, H * T - VH);
+  }
+  ctx.save();
+  ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
+  const x0 = Math.floor(cam.x / T), y0 = Math.floor(cam.y / T), x1 = Math.min(W - 1, x0 + Math.ceil(VW / T) + 1), y1 = Math.min(H - 1, y0 + Math.ceil(VH / T) + 1);
+  const fires = [];
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const c = grid[y * W + x], px = x * T, py = y * T;
+    ctx.fillStyle = c === '~' ? (winter ? '#a9cfe0' : '#3f7fb5') : grassColor(season, x, y);
+    ctx.fillRect(px, py, T, T);
+    if (c === '~') {
+      ctx.strokeStyle = winter ? 'rgba(255,255,255,.5)' : 'rgba(255,255,255,.18)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); const o = Math.sin(t + x * 0.7 + y) * 3; ctx.moveTo(px + 6, py + 14 + o); ctx.lineTo(px + 16, py + 12 + o); ctx.stroke();
+    } else drawTile(c, px, py, winter, t, x, y);
+    if (c === 'F') fires.push([px + T / 2, py + T / 2]);
+    if (BUILD[c] && BUILD[c].icon && c !== 'F' && c !== 'A') { ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(BUILD[c].icon, px + T / 2, py + T - 3); }
+  }
+  // Ziel-Feld beim Arbeiten
+  for (const { p } of shown) if (p[8] >= 0) {
+    const wx = (p[8] % W) * T, wy = ((p[8] / W) | 0) * T;
+    ctx.strokeStyle = 'rgba(255,240,180,.8)'; ctx.lineWidth = 2; ctx.strokeRect(wx + 2, wy + 2, T - 4, T - 4);
+  }
+  // Bau-Vorschau
+  if (S.sel && S.hover) {
+    const [hx, hy] = S.hover, ok = grid[hy * W + hx] === '.' && BUILD[S.sel].level <= v.level;
+    ctx.fillStyle = ok ? 'rgba(120,255,120,.35)' : 'rgba(255,80,60,.35)';
+    ctx.fillRect(hx * T, hy * T, T, T);
+    ctx.globalAlpha = 0.7; ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(BUILD[S.sel].icon, hx * T + T / 2, hy * T + T / 2 + 6); ctx.globalAlpha = 1;
+  }
+  // Siedler
+  for (const [x, y, working, sad] of v.vill) {
+    const px = x * T, py = y * T + (working ? Math.sin(t * 8 + x) * 1.5 : 0);
+    ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.beginPath(); ctx.ellipse(px, py + 7, 6, 3, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c9b07a'; ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#f1d6b0'; ctx.beginPath(); ctx.arc(px, py - 7, 4.5, 0, Math.PI * 2); ctx.fill();
+    if (sad) { ctx.font = '11px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(winter ? '🥶' : '😟', px, py - 14); }
+  }
+  // Spieler
+  for (const { p, d } of shown) drawPlayer(d.x * T, d.y * T, p, t);
+  ctx.restore();
+
+  // Nacht und Dämmerung mit Lichtkreisen ums Feuer
+  const tm = v.time;
+  let dark = 0;
+  if (tm >= NIGHT_FROM) dark = Math.min(1, (tm - NIGHT_FROM) / 0.05) * 0.62;
+  else if (tm < 0.06) dark = (1 - tm / 0.06) * 0.62;
+  else if (tm > NIGHT_FROM - 0.06) dark = (tm - (NIGHT_FROM - 0.06)) / 0.06 * 0.2;
+  if (dark > 0.01) {
+    lctx.globalCompositeOperation = 'source-over';
+    lctx.clearRect(0, 0, VW, VH);
+    lctx.fillStyle = `rgba(12,16,48,${dark})`; lctx.fillRect(0, 0, VW, VH);
+    lctx.globalCompositeOperation = 'destination-out';
+    const lights = fires.map(([x, y]) => [x, y, 150 + Math.sin(t * 7 + x) * 6]);
+    if (me) lights.push([me.d.x * T, me.d.y * T, 55]);
+    for (const [x, y, r] of lights) {
+      const sx = x - cam.x, sy = y - cam.y;
+      const g = lctx.createRadialGradient(sx, sy, 10, sx, sy, r);
+      g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+      lctx.fillStyle = g; lctx.beginPath(); lctx.arc(sx, sy, r, 0, Math.PI * 2); lctx.fill();
+    }
+    ctx.drawImage(light, 0, 0);
+  }
+}
+
+function drawTile(c, px, py, winter, t, x, y) {
+  const cx = px + T / 2, cy = py + T / 2;
+  if (c === 'T') {
+    ctx.fillStyle = 'rgba(0,0,0,.18)'; ctx.beginPath(); ctx.ellipse(cx, py + T - 4, 11, 4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#6b4a2b'; ctx.fillRect(cx - 3, cy + 2, 6, 11);
+    ctx.fillStyle = winter ? '#2f5a45' : ((x + y) % 3 ? '#2e6b34' : '#357a3b');
+    ctx.beginPath(); ctx.moveTo(cx, py + 1); ctx.lineTo(cx + 13, cy + 7); ctx.lineTo(cx - 13, cy + 7); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(cx, py + 7); ctx.lineTo(cx + 11, cy + 3); ctx.lineTo(cx - 11, cy + 3); ctx.closePath(); ctx.fill();
+    if (winter) { ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.beginPath(); ctx.moveTo(cx, py + 1); ctx.lineTo(cx + 5, py + 8); ctx.lineTo(cx - 5, py + 8); ctx.closePath(); ctx.fill(); }
+  } else if (c === 't') {
+    ctx.fillStyle = '#7a5532'; ctx.beginPath(); ctx.ellipse(cx, cy + 5, 6, 4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c9a06b'; ctx.beginPath(); ctx.ellipse(cx, cy + 3, 5, 3, 0, 0, Math.PI * 2); ctx.fill();
+  } else if (c === 'R') {
+    ctx.fillStyle = '#7d8288'; ctx.beginPath(); ctx.moveTo(px + 4, py + T - 5); ctx.lineTo(px + 7, py + 10); ctx.lineTo(px + 16, py + 5); ctx.lineTo(px + 27, py + 11); ctx.lineTo(px + 29, py + T - 5); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#9aa0a6'; ctx.beginPath(); ctx.moveTo(px + 8, py + 11); ctx.lineTo(px + 16, py + 6); ctx.lineTo(px + 20, py + 14); ctx.lineTo(px + 10, py + 17); ctx.closePath(); ctx.fill();
+  } else if (c === 'B' || c === 'b') {
+    ctx.fillStyle = winter ? '#5d7a5a' : '#3f8a3a'; ctx.beginPath(); ctx.arc(cx - 5, cy + 3, 8, 0, Math.PI * 2); ctx.arc(cx + 5, cy + 3, 8, 0, Math.PI * 2); ctx.arc(cx, cy - 3, 8, 0, Math.PI * 2); ctx.fill();
+    if (c === 'B') { ctx.fillStyle = '#d6304a'; for (const [ox, oy] of [[-6, 2], [4, -4], [6, 5], [-1, 6], [-3, -5]]) { ctx.beginPath(); ctx.arc(cx + ox, cy + oy, 2.3, 0, Math.PI * 2); ctx.fill(); } }
+  } else if (c === 'F') {
+    ctx.fillStyle = '#6b6b6b'; for (let k = 0; k < 7; k++) { const a = (k / 7) * Math.PI * 2; ctx.beginPath(); ctx.arc(cx + Math.cos(a) * 9, cy + 4 + Math.sin(a) * 5, 3, 0, Math.PI * 2); ctx.fill(); }
+    const f = Math.sin(t * 12 + x) * 2;
+    ctx.fillStyle = '#f08c2a'; ctx.beginPath(); ctx.moveTo(cx - 6, cy + 5); ctx.quadraticCurveTo(cx, cy - 14 - f, cx + 6, cy + 5); ctx.fill();
+    ctx.fillStyle = '#ffd35a'; ctx.beginPath(); ctx.moveTo(cx - 3, cy + 5); ctx.quadraticCurveTo(cx, cy - 6 + f, cx + 3, cy + 5); ctx.fill();
+  } else if (c === 'H' || c === 'S' || c === 'L' || c === 'Q') {
+    const wall = { H: '#a7784a', S: '#b08d5a', L: '#8d6a43', Q: '#8f8a80' }[c], roof = { H: '#7b4b2a', S: '#9b6b2f', L: '#5f3f22', Q: '#5b5f66' }[c];
+    ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.fillRect(px + 4, py + T - 6, T - 6, 4);
+    ctx.fillStyle = wall; ctx.fillRect(px + 5, py + 13, T - 10, T - 17);
+    ctx.fillStyle = winter ? '#eef2f4' : roof; ctx.beginPath(); ctx.moveTo(px + 2, py + 15); ctx.lineTo(cx, py + 2); ctx.lineTo(px + T - 2, py + 15); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#3b2716'; ctx.fillRect(cx - 3, py + T - 11, 6, 7);
+  } else if (c === 'M') {
+    ctx.fillStyle = 'rgba(0,0,0,.2)'; ctx.fillRect(px + 3, py + T - 5, T - 4, 4);
+    ctx.fillStyle = '#b9b3a7'; ctx.fillRect(px + 3, py + 12, T - 6, T - 15);
+    ctx.fillStyle = winter ? '#eef2f4' : '#a5432f'; ctx.beginPath(); ctx.moveTo(px + 1, py + 14); ctx.lineTo(cx, py + 1); ctx.lineTo(px + T - 1, py + 14); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#ffe9a6'; ctx.fillRect(px + 7, py + 17, 5, 5); ctx.fillRect(px + T - 12, py + 17, 5, 5);
+  } else if (c === 'A') {
+    ctx.fillStyle = winter ? '#cfc6b8' : '#8a6a3e'; ctx.fillRect(px + 2, py + 2, T - 4, T - 4);
+    ctx.strokeStyle = winter ? '#b8ae9f' : '#d9c35a'; ctx.lineWidth = 2;
+    for (let k = 0; k < 4; k++) { ctx.beginPath(); ctx.moveTo(px + 5, py + 6 + k * 7); ctx.lineTo(px + T - 5, py + 6 + k * 7); ctx.stroke(); }
+  } else if (c === 'P') {
+    ctx.fillStyle = '#8f8a80'; ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = winter ? '#cfe6f0' : '#4b93c9'; ctx.beginPath(); ctx.arc(cx, cy, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.6)'; ctx.beginPath(); ctx.arc(cx + Math.sin(t * 2) * 3, cy - 2, 2, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawPlayer(px, py, p, t) {
+  const [, name, color, , , ddx, ddy, moving, workAt] = p;
+  const bob = moving ? Math.abs(Math.sin(t * 10)) * 2 : 0;
+  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(px, py + 9, 8, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = color; ctx.beginPath(); ctx.arc(px, py - bob, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.fillStyle = '#f1d6b0'; ctx.beginPath(); ctx.arc(px, py - 10 - bob, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(px + ddx * 3 - 2, py - 10 - bob + ddy * 2, 1.2, 0, Math.PI * 2); ctx.arc(px + ddx * 3 + 2, py - 10 - bob + ddy * 2, 1.2, 0, Math.PI * 2); ctx.fill();
+  if (workAt >= 0) {
+    const sw = Math.sin(t * 14) * 0.8;
+    ctx.save(); ctx.translate(px + ddx * 9, py - 4 + ddy * 6); ctx.rotate(sw);
+    ctx.fillStyle = '#6b4a2b'; ctx.fillRect(-1.5, -10, 3, 12); ctx.fillStyle = '#c7ccd1'; ctx.fillRect(-1.5, -11, 7, 4);
+    ctx.restore();
+  }
+  ctx.font = 'bold 11px system-ui, sans-serif'; ctx.textAlign = 'center';
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.strokeText(name, px, py - 20 - bob);
+  ctx.fillStyle = '#fff'; ctx.fillText(name, px, py - 20 - bob);
+}
+
+// ---------------------------------------------------------------- Eingabe
+const held = new Set();
+const DIRS = { ArrowLeft: [-1, 0], KeyA: [-1, 0], ArrowRight: [1, 0], KeyD: [1, 0], ArrowUp: [0, -1], KeyW: [0, -1], ArrowDown: [0, 1], KeyS: [0, 1] };
+function recomputeDir() {
+  let dx = 0, dy = 0;
+  for (const k of held) if (DIRS[k]) { dx += DIRS[k][0]; dy += DIRS[k][1]; }
+  for (const k of touchDirs) { dx += k[0]; dy += k[1]; }
+  S.input.dx = Math.sign(dx); S.input.dy = Math.sign(dy);
+  S.input.work = held.has('Space') || held.has('KeyE') || touchWork ? 1 : 0;
+}
+const typing = () => { const a = document.activeElement; return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA'); };
+addEventListener('keydown', (e) => {
+  if (!S.role || typing()) return;
+  if (DIRS[e.code] || e.code === 'Space' || e.code === 'KeyE') { held.add(e.code); recomputeDir(); e.preventDefault(); return; }
+  const n = '12345678'.indexOf(e.key);
+  if (n >= 0) { selectBuild(BUILD_KEYS[n]); return; }
+  if (e.code === 'Escape') { S.sel = null; updateHint(); return; }
+  if ((e.code === 'KeyB' || e.code === 'Enter') && S.sel) {
+    const me = S.view && S.view.players.find((p) => p[0] === S.myId);
+    if (me) doBuild(S.sel, Math.floor(me[3]) + me[5], Math.floor(me[4]) + me[6]);
+    e.preventDefault();
+  }
+});
+addEventListener('keyup', (e) => { held.delete(e.code); recomputeDir(); });
+addEventListener('blur', () => { held.clear(); recomputeDir(); });
+
+function tileAt(e) {
+  const r = cv.getBoundingClientRect();
+  const x = (e.clientX - r.left) * (VW / r.width) + cam.x, y = (e.clientY - r.top) * (VH / r.height) + cam.y;
+  return [clamp(Math.floor(x / T), 0, W - 1), clamp(Math.floor(y / T), 0, H - 1)];
+}
+cv.addEventListener('pointermove', (e) => { S.hover = tileAt(e); });
+cv.addEventListener('pointerleave', () => { S.hover = null; });
+cv.addEventListener('pointerdown', (e) => {
+  if (!S.sel) return;
+  const [x, y] = tileAt(e); S.hover = [x, y];
+  doBuild(S.sel, x, y);
+});
+cv.addEventListener('contextmenu', (e) => { e.preventDefault(); S.sel = null; updateHint(); });
+$('buildbar').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) selectBuild(b.dataset.k); });
+
+// Touch-Steuerung
+const touchDirs = new Set();
+let touchWork = false;
+if (matchMedia('(pointer: coarse)').matches) $('touch').hidden = false;
+for (const b of document.querySelectorAll('.pad button')) {
+  const d = b.dataset.d.split(',').map(Number);
+  const on = (e) => { e.preventDefault(); touchDirs.add(d); recomputeDir(); };
+  const off = () => { touchDirs.delete(d); recomputeDir(); };
+  b.addEventListener('pointerdown', on); b.addEventListener('pointerup', off); b.addEventListener('pointercancel', off); b.addEventListener('pointerleave', off);
+}
+{
+  const b = $('t-work');
+  b.addEventListener('pointerdown', (e) => { e.preventDefault(); touchWork = true; recomputeDir(); });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, () => { touchWork = false; recomputeDir(); });
+}
+
+// ---------------------------------------------------------------- Start, Knöpfe, Einladung
+function renderSaves() {
+  const list = listSaves();
+  $('saves-panel').hidden = !list.length;
+  $('saves').innerHTML = list.map((s) => `<li><span><b>${esc(s.room === 'allein' ? 'Allein-Dorf' : s.room)}</b> · Tag ${s.day} · ${s.pop} Siedler · ${esc(LEVELS[clamp(s.level, 0, 3)].name)}</span><button class="secondary" data-room="${esc(s.room)}">Auswählen</button></li>`).join('');
+}
+$('saves').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.room === 'allein') { hostRoom(true); return; }
+  $('in-room').value = b.dataset.room; $('in-pass').focus();
+  startMsg('Passwort eingeben und „Dorf öffnen“ drücken. Mitspieler brauchen dasselbe Passwort.');
+});
+$('btn-host').addEventListener('click', () => hostRoom(false));
+$('btn-join').addEventListener('click', joinRoom);
+$('btn-solo').addEventListener('click', () => hostRoom(true));
+$('btn-leave').addEventListener('click', () => leave(''));
+$('inv-pw').addEventListener('change', () => { $('inv-link').value = inviteLink(); });
+$('btn-random').addEventListener('click', () => {
+  const a = ['eichen', 'birken', 'tannen', 'moos', 'fuchs', 'bach', 'nebel', 'sonnen'], b = ['hain', 'tal', 'grund', 'feld', 'au', 'wald'];
+  $('in-room').value = a[(Math.random() * a.length) | 0] + b[(Math.random() * b.length) | 0] + ((Math.random() * 90 + 10) | 0);
+  $('in-pass').value = Math.random().toString(36).slice(2, 8);
+  if (!$('in-name').value) $('in-name').value = NAMES[(Math.random() * NAMES.length) | 0];
+});
+async function copyInvite() {
+  const link = inviteLink();
+  let ok = false;
+  try { await navigator.clipboard.writeText(link); ok = true; } catch (e) {
+    const el = $('inv-link'); el.focus(); el.select();
+    try { ok = document.execCommand('copy'); } catch (e2) {}
+  }
+  $('btn-copy').textContent = ok ? 'Kopiert ✓' : 'Markieren & kopieren';
+  setTimeout(() => { $('btn-copy').textContent = 'Kopieren'; }, 2000);
+}
+$('btn-copy').addEventListener('click', copyInvite);
+if (navigator.share) {
+  $('btn-share').hidden = false;
+  $('btn-share').addEventListener('click', () => navigator.share({ title: 'Lichtung', text: 'Bau mit mir am Dorf „' + S.room + '“:', url: inviteLink() }).catch(() => {}));
+}
+addEventListener('beforeunload', () => { if (S.role === 'host') saveNow(); });
+
+(function init() {
+  try { $('in-name').value = localStorage.getItem('lichtung-name') || ''; } catch (e) {}
+  renderSaves();
+  const h = new URLSearchParams(location.hash.slice(1));
+  const room = slug(h.get('dorf') || '');
+  if (room) {
+    $('in-room').value = room;
+    if (h.get('pw')) $('in-pass').value = h.get('pw');
+    history.replaceState(null, '', location.pathname + location.search);
+    startMsg('Du bist eingeladen! Name eingeben und „Dorf beitreten“ drücken.');
+    $('btn-join').classList.remove('secondary'); $('btn-host').classList.add('secondary');
+    $('in-name').focus();
+  }
+})();
+
+// Neue Version auf GitHub Pages erkennen, damit alle dieselbe Version spielen
+if (!VERSION.startsWith('__')) {
+  setInterval(async () => {
+    try {
+      const r = await fetch('version.txt?t=' + Date.now(), { cache: 'no-store' });
+      const v = (await r.text()).trim();
+      if (v && v !== VERSION) $('update-bar').hidden = false;
+    } catch (e) {}
+  }, 60000);
+  $('btn-reload').addEventListener('click', () => location.reload());
+}
+
+// Für Tests
+window.__lichtung = { S, Game, BUILD, cleanSave };

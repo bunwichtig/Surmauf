@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Lichtung</title>
+<link rel="stylesheet" href="style.css?v=__VERSION__">
+</head>
+<body>
+<main id="app">
+  <header>
+    <h1>Lichtung</h1>
+    <p class="sub">Iteration 1: mit eigener Spielfigur. <a href="../" style="color:inherit">Zur aktuellen Version</a></p>
+  </header>
+
+  <!-- Startbildschirm -->
+  <section id="screen-start">
+    <div class="panel">
+      <label>Dein Name <input id="in-name" maxlength="12" autocomplete="nickname" placeholder="z. B. Dave"></label>
+      <label>Dorfname (Raum) <input id="in-room" maxlength="24" autocomplete="off" placeholder="z. B. eichenhain"></label>
+      <label>Passwort <input id="in-pass" type="text" maxlength="40" autocomplete="off" spellcheck="false"></label>
+      <button id="btn-random" type="button" class="secondary small">🎲 Zufällig</button>
+      <div class="row">
+        <button id="btn-host">Dorf öffnen</button>
+        <button id="btn-join" class="secondary">Dorf beitreten</button>
+      </div>
+      <button id="btn-solo" class="secondary wide">Allein spielen</button>
+      <p id="start-msg" class="msg" role="status"></p>
+    </div>
+    <div class="panel" id="saves-panel" hidden>
+      <h2>Eure Dörfer in diesem Browser</h2>
+      <ul id="saves" class="saves"></ul>
+      <p class="note">Wer ein Dorf öffnet, spielt mit seinem gespeicherten Stand weiter. Mitspieler bekommen regelmäßig eine Kopie. So kann später auch jemand anderes das Dorf öffnen.</p>
+    </div>
+    <div class="panel">
+      <details open>
+        <summary>So wird gespielt</summary>
+        <p><b>Laufen:</b> WASD oder Pfeiltasten. <b>Arbeiten:</b> Leertaste oder E gedrückt halten, vor einem Baum 🌲, Stein 🪨 oder Beerenstrauch. Alles Gesammelte landet im gemeinsamen Vorrat.</p>
+        <p><b>Bauen:</b> Gebäude unten auswählen (oder Taste 1 bis 8) und auf eine freie Wiese klicken. B baut direkt vor deiner Figur, Esc bricht ab.</p>
+        <p><b>Siedler</b> ziehen ein, wenn es eine Feuerstelle, freie Betten und genug Essen gibt. Sie arbeiten tagsüber in Sammlerhütte, Holzfäller, Acker und Steinbruch.</p>
+        <p><b>Überleben, ganz leicht:</b> Jeden Morgen isst jeder Siedler 1 Nahrung. Im Winter wächst nichts und die Hütten brauchen Holz zum Heizen. Wer zwei Tage hungert oder friert, zieht wieder weg. Ihr selbst könnt nicht sterben.</p>
+        <p><b>Zusammen spielen:</b> Einer öffnet ein Dorf mit Name und Passwort und schickt den Einladungslink. Die anderen klicken den Link und treten bei, jederzeit, auch mitten im Spiel. Der Browser des Gastgebers rechnet das Dorf und muss offen bleiben.</p>
+      </details>
+    </div>
+  </section>
+
+  <!-- Spiel -->
+  <section id="screen-game" hidden>
+    <div id="hud" class="hud">
+      <span class="res" title="Holz">🪵 <b id="r-wood">0</b></span>
+      <span class="res" title="Stein">🪨 <b id="r-stone">0</b></span>
+      <span class="res" title="Nahrung">🍓 <b id="r-food">0</b></span>
+      <span class="res" title="Bewohner / Betten">👥 <b id="r-pop">0</b></span>
+      <span class="clock"><span id="c-day">Tag 1</span> · <span id="c-season">Frühling</span> <span class="bar"><i id="c-bar"></i></span></span>
+      <span class="level"><b id="l-name">Lagerplatz</b> · <span id="l-goal"></span></span>
+    </div>
+    <div class="stage">
+      <canvas id="cv" width="960" height="576"></canvas>
+      <div id="toasts" class="toasts" aria-live="polite"></div>
+      <div id="touch" class="touch" hidden>
+        <div class="pad">
+          <button data-d="0,-1" class="up">▲</button>
+          <button data-d="-1,0" class="left">◀</button>
+          <button data-d="1,0" class="right">▶</button>
+          <button data-d="0,1" class="down">▼</button>
+        </div>
+        <button id="t-work" class="work">Arbeiten</button>
+      </div>
+    </div>
+    <div id="buildbar" class="buildbar"></div>
+    <p id="build-hint" class="hint"></p>
+    <div class="side">
+      <div class="panel">
+        <h2>Dorfbewohner</h2>
+        <ul id="people" class="people"></ul>
+      </div>
+      <div class="panel" id="invite-panel">
+        <h2>Freunde einladen</h2>
+        <div class="row"><input id="inv-link" readonly><button id="btn-copy" class="small">Kopieren</button><button id="btn-share" class="small secondary" hidden>Teilen</button></div>
+        <label class="check"><input id="inv-pw" type="checkbox" checked> Passwort in den Link</label>
+        <p class="note">Dein Browser ist der Gastgeber. Bitte den Tab offen lassen.</p>
+      </div>
+      <div class="panel">
+        <button id="btn-leave" class="secondary wide">Dorf verlassen</button>
+        <p class="note" id="role-note"></p>
+      </div>
+    </div>
+  </section>
+  <div id="update-bar" class="update-bar" hidden>Es gibt eine neue Version. <button id="btn-reload" class="small">Neu laden</button></div>
+  <p class="ver">Version 0.1.0 · __VERSION__</p>
+</main>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="game.js?v=__VERSION__"></script>
+</body>
+</html>
