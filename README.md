@@ -15,6 +15,8 @@ Der Browser des Gastgebers rechnet das Dorf und muss offen bleiben. Die Verbindu
 
 - **Bauen:** Gebäude unten wählen (oder Taste 1 bis 8) und auf freie Wiese klicken. 🧹 Abreißen (X) entfernt ein Gebäude und gibt die Hälfte der Kosten zurück. Esc oder Rechtsklick bricht ab.
 - **Karte verschieben:** mit Maus oder Finger ziehen, oder WASD und Pfeiltasten.
+- **Zoomen:** zwei Finger, Mausrad, Tasten + und − oder die Knöpfe am Spielfeld. Ganz herausgezoomt sieht man die ganze Karte.
+- **Handy:** Das Spielfeld füllt den Bildschirm, das Baumenü lässt sich seitlich wischen. Gebäude antippen, dann auf die Wiese tippen.
 - **Tempo:** Der Gastgeber kann 1×, 2× oder 4× einstellen.
 - Alle Mitspieler bauen am selben Dorf mit einem gemeinsamen Vorrat. Wo die anderen gerade hinzeigen, sieht man als farbigen Rahmen mit Namen.
 - Arbeitsgebäude ohne freien Siedler zeigen 💤, mit zu wenig Natur in der Nähe ⚠️. Fährt man mit der Maus über ein Gebäude, steht unten, was los ist.

@@ -50,7 +50,7 @@ summary { cursor: pointer; font-weight: 600; }
 .hud .level { margin-left: auto; color: var(--muted); }
 .hud .level b { color: var(--accent2); }
 .stage { position: relative; }
-canvas { display: block; width: 100%; height: auto; background: #3c6b3a; border-left: 1px solid var(--line); border-right: 1px solid var(--line); touch-action: none; }
+canvas { display: block; width: 100%; height: clamp(320px, 66vh, 700px); background: #3c6b3a; border-left: 1px solid var(--line); border-right: 1px solid var(--line); touch-action: none; }
 .toasts { position: absolute; left: 10px; top: 10px; display: flex; flex-direction: column; gap: 4px; pointer-events: none; max-width: 60%; }
 .toast { background: rgba(20, 30, 22, .82); border-radius: 6px; padding: 4px 9px; font-size: 13px; animation: fade 6s forwards; }
 @keyframes fade { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
@@ -86,3 +86,23 @@ canvas { display: block; width: 100%; height: auto; background: #3c6b3a; border-
 .speed button { background: #314536; color: var(--text); padding: 3px 8px; }
 .speed button.sel { background: var(--accent); color: #241a08; }
 .ver a { color: var(--muted); }
+
+.zoom { position: absolute; right: 10px; top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.zoom button { width: 40px; height: 40px; padding: 0; font-size: 22px; line-height: 1; background: rgba(38, 54, 42, .88); color: var(--text); border: 1px solid var(--line); }
+.buildbar { -webkit-overflow-scrolling: touch; }
+@media (max-width: 700px) {
+  body.ingame header { display: none; }
+  body.ingame #app { padding-top: 4px; }
+  .hud { font-size: 12.5px; padding: 6px 8px; gap: 3px 9px; }
+  .hud .bar { width: 44px; }
+  .hud .level { font-size: 12px; }
+  #l-goal { display: none; }
+  canvas { height: calc(100dvh - 215px); min-height: 280px; }
+  .buildbar { flex-wrap: nowrap; overflow-x: auto; padding: 6px; scroll-snap-type: x proximity; }
+  .buildbar button { flex: 0 0 86px; padding: 6px 5px; scroll-snap-align: start; }
+  .buildbar button .k { display: none; }
+  .toasts { max-width: 78%; left: 6px; top: 6px; }
+  .toast { font-size: 12px; padding: 3px 7px; }
+  .toast:nth-last-child(n+4) { display: none; }
+  .hint { font-size: 12px; min-height: 2.6em; }
+}

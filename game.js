@@ -674,6 +674,7 @@ function leave(reason) {
   Object.assign(S, { role: null, game: null, hostNet: null, conns: new Map(), conn: null, view: null, grid: null, myId: null, sel: null, seenEv: 0 });
   camInit = false;
   $('screen-start').hidden = false; $('screen-game').hidden = true;
+  document.body.classList.remove('ingame');
   renderSaves();
   startMsg(reason || '');
 }
@@ -698,6 +699,8 @@ function enterGame() {
     : S.role === 'host' ? 'Dorf „' + S.room + '“. Wird alle 15 Sekunden gespeichert.'
       : 'Du bist Gast im Dorf „' + S.room + '“. Eine Kopie wird in deinem Browser gespeichert.';
   renderBuildbar();
+  document.body.classList.add('ingame');
+  requestAnimationFrame(resizeCanvas);
   $('speed').hidden = S.role !== 'host';
   setSpeed(S.role === 'host' ? (S.game.speed || 1) : 1);
   try { if (navigator.wakeLock && S.role === 'host') navigator.wakeLock.request('screen').catch(() => {}); } catch (e) {}
@@ -726,11 +729,11 @@ function updateHint() {
   const v = S.view;
   for (const b of $('buildbar').children) b.classList.toggle('sel', b.dataset.k === S.sel);
   let text;
-  if (!S.sel) text = 'Wähle unten ein Gebäude und klicke auf freie Wiese. Karte verschieben: ziehen oder WASD/Pfeiltasten.';
+  if (!S.sel) text = 'Wähle unten ein Gebäude und tippe auf freie Wiese. Karte ziehen zum Verschieben, zwei Finger oder Mausrad zum Zoomen.';
   else if (S.sel === 'X') text = DEMOLISH.icon + ' ' + DEMOLISH.desc + ' Klicke auf ein Gebäude. Esc bricht ab.';
   else {
     const d = BUILD[S.sel], locked = v && d.level > v.level;
-    text = d.icon + ' ' + d.name + ': ' + d.desc + (locked ? ' (Ab Stufe „' + LEVELS[d.level].name + '“.)' : ' Klicke auf freie Wiese. Esc oder Rechtsklick bricht ab.');
+    text = d.icon + ' ' + d.name + ': ' + d.desc + (locked ? ' (Ab Stufe „' + LEVELS[d.level].name + '“.)' : ' Tippe auf freie Wiese. Nochmal auf das Gebäude unten tippen bricht ab.');
   }
   // Infos zum Gebäude unter dem Mauszeiger
   if (v && S.hover && S.grid) {
@@ -764,6 +767,7 @@ function updateHud(v) {
   $('c-bar').parentElement.classList.toggle('night', v.time >= NIGHT_FROM);
   $('l-name').textContent = '⭐ ' + LEVELS[v.level].name;
   $('l-goal').textContent = 'Ziel: ' + LEVELS[v.level].goal;
+  $('level-box').title = 'Ziel: ' + LEVELS[v.level].goal;
   for (const b of $('buildbar').children) {
     const d = BUILD[b.dataset.k];
     if (!d) continue;
@@ -785,9 +789,33 @@ function updateHud(v) {
 
 // ---------------------------------------------------------------- Zeichnen
 const cv = $('cv'), ctx = cv.getContext('2d');
-const VW = cv.width, VH = cv.height;
-const light = document.createElement('canvas'); light.width = VW; light.height = VH;
+// Bildschirmgröße in CSS-Pixeln, Zoom = CSS-Pixel pro Welt-Pixel
+let VW = 960, VH = 576, dpr = 1, zoom = 1;
+const light = document.createElement('canvas');
 const lctx = light.getContext('2d');
+function resizeCanvas() {
+  const r = cv.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  VW = r.width; VH = r.height;
+  cv.width = light.width = Math.round(VW * dpr);
+  cv.height = light.height = Math.round(VH * dpr);
+  clampCam();
+}
+function clampCam() {
+  const vw = VW / zoom, vh = VH / zoom;
+  cam.x = vw >= W * T ? (W * T - vw) / 2 : clamp(cam.x, 0, W * T - vw);
+  cam.y = vh >= H * T ? (H * T - vh) / 2 : clamp(cam.y, 0, H * T - vh);
+}
+// Zoomen um einen Punkt auf dem Bildschirm (sx, sy in CSS-Pixeln im Spielfeld)
+function zoomAt(z, sx, sy) {
+  const wx = cam.x + sx / zoom, wy = cam.y + sy / zoom;
+  zoom = clamp(z, 0.35, 2.6);
+  cam.x = wx - sx / zoom; cam.y = wy - sy / zoom;
+  clampCam();
+}
+if (window.ResizeObserver) new ResizeObserver(resizeCanvas).observe(cv);
+addEventListener('resize', resizeCanvas);
 let cam = { x: 0, y: 0 };
 
 function grassColor(season, x, y) {
@@ -804,12 +832,20 @@ function draw(v, isHost) {
   const t = performance.now() / 1000;
   // Kamera: frei verschiebbar, am Anfang auf die Dorfmitte
   const now = performance.now(), fdt = Math.min(0.05, (now - (draw.last || now)) / 1000); draw.last = now;
-  if (!camInit) { camInit = true; cam.x = W * T / 2 - VW / 2; cam.y = H * T / 2 - VH / 2; }
-  cam.x = clamp(cam.x + panDir[0] * 700 * fdt, 0, W * T - VW);
-  cam.y = clamp(cam.y + panDir[1] * 700 * fdt, 0, H * T - VH);
+  if (!camInit) {
+    camInit = true; resizeCanvas();
+    zoom = VW < 600 ? 1.15 : 1;
+    cam.x = W * T / 2 - VW / zoom / 2; cam.y = H * T / 2 - VH / zoom / 2;
+  }
+  cam.x += panDir[0] * 700 * fdt / zoom; cam.y += panDir[1] * 700 * fdt / zoom;
+  clampCam();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#1d2a1f'; ctx.fillRect(0, 0, VW, VH);
   ctx.save();
-  ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
-  const x0 = Math.floor(cam.x / T), y0 = Math.floor(cam.y / T), x1 = Math.min(W - 1, x0 + Math.ceil(VW / T) + 1), y1 = Math.min(H - 1, y0 + Math.ceil(VH / T) + 1);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-cam.x, -cam.y);
+  const x0 = Math.max(0, Math.floor(cam.x / T)), y0 = Math.max(0, Math.floor(cam.y / T));
+  const x1 = Math.min(W - 1, Math.floor((cam.x + VW / zoom) / T)), y1 = Math.min(H - 1, Math.floor((cam.y + VH / zoom) / T));
   const fires = [];
   for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
     const c = grid[y * W + x], px = x * T, py = y * T;
@@ -857,17 +893,19 @@ function draw(v, isHost) {
   else if (tm < 0.06) dark = (1 - tm / 0.06) * 0.62;
   else if (tm > NIGHT_FROM - 0.06) dark = (tm - (NIGHT_FROM - 0.06)) / 0.06 * 0.2;
   if (dark > 0.01) {
+    lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     lctx.globalCompositeOperation = 'source-over';
     lctx.clearRect(0, 0, VW, VH);
     lctx.fillStyle = `rgba(12,16,48,${dark})`; lctx.fillRect(0, 0, VW, VH);
     lctx.globalCompositeOperation = 'destination-out';
     const lights = fires.map(([x, y]) => [x, y, 150 + Math.sin(t * 7 + x) * 6]);
-    for (const [x, y, r] of lights) {
-      const sx = x - cam.x, sy = y - cam.y;
-      const g = lctx.createRadialGradient(sx, sy, 10, sx, sy, r);
+    for (let [x, y, r] of lights) {
+      const sx = (x - cam.x) * zoom, sy = (y - cam.y) * zoom; r *= zoom;
+      const g = lctx.createRadialGradient(sx, sy, 10 * zoom, sx, sy, r);
       g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,0)');
       lctx.fillStyle = g; lctx.beginPath(); lctx.arc(sx, sy, r, 0, Math.PI * 2); lctx.fill();
     }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(light, 0, 0);
   }
 }
@@ -943,47 +981,73 @@ addEventListener('keydown', (e) => {
   if (n >= 0) { selectBuild(BUILD_KEYS[n]); return; }
   if (e.code === 'KeyX' || e.key === '9') { selectBuild('X'); return; }
   if (e.code === 'Escape') { S.sel = null; updateHint(); }
+  if (e.key === '+' || e.key === '=') zoomAt(zoom * 1.25, VW / 2, VH / 2);
+  if (e.key === '-') zoomAt(zoom / 1.25, VW / 2, VH / 2);
 });
 addEventListener('keyup', (e) => { held.delete(e.code); recomputePan(); });
 addEventListener('blur', () => { held.clear(); recomputePan(); });
 
 function tileAt(e) {
   const r = cv.getBoundingClientRect();
-  const x = (e.clientX - r.left) * (VW / r.width) + cam.x, y = (e.clientY - r.top) * (VH / r.height) + cam.y;
+  const x = cam.x + (e.clientX - r.left) / zoom, y = cam.y + (e.clientY - r.top) / zoom;
   return [clamp(Math.floor(x / T), 0, W - 1), clamp(Math.floor(y / T), 0, H - 1)];
 }
 function setHover(tile) {
   S.hover = tile;
   S.input.hx = tile ? tile[0] : -1; S.input.hy = tile ? tile[1] : -1;
 }
-// Ziehen verschiebt die Karte, ein kurzer Klick baut
-let drag = null;
+// Ziehen verschiebt die Karte, ein kurzer Klick/Tipp baut, zwei Finger zoomen
+let drag = null, pinch = null;
+const pts = new Map();
+const rel = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+function startPinch() {
+  const [a, b] = [...pts.values()];
+  pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, z: zoom, mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2 };
+}
 cv.addEventListener('pointerdown', (e) => {
   if (e.button === 2) return;
-  drag = { id: e.pointerId, x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, moved: false };
+  pts.set(e.pointerId, rel(e));
   cv.setPointerCapture(e.pointerId);
+  if (pts.size === 2) { startPinch(); if (drag) drag.moved = true; return; }
+  if (pts.size === 1) drag = { id: e.pointerId, x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, moved: false };
 });
 cv.addEventListener('pointermove', (e) => {
-  if (drag && drag.id === e.pointerId) {
-    const r = cv.getBoundingClientRect(), sc = VW / r.width;
-    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-    if (Math.hypot(dx, dy) > 6) drag.moved = true;
-    if (drag.moved) {
-      cam.x = clamp(drag.cx - dx * sc, 0, W * T - VW); cam.y = clamp(drag.cy - dy * sc, 0, H * T - VH);
-      return;
-    }
+  if (pts.has(e.pointerId)) pts.set(e.pointerId, rel(e));
+  if (pinch && pts.size >= 2) {
+    const [a, b] = [...pts.values()];
+    const d = Math.hypot(a[0] - b[0], a[1] - b[1]), mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
+    cam.x -= (mx - pinch.mx) / zoom; cam.y -= (my - pinch.my) / zoom;
+    pinch.mx = mx; pinch.my = my;
+    zoomAt(pinch.z * d / pinch.d, mx, my);
+    return;
   }
-  setHover(tileAt(e));
+  if (drag && drag.id === e.pointerId) {
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.hypot(dx, dy) > (e.pointerType === 'touch' ? 10 : 6)) drag.moved = true;
+    if (drag.moved) { cam.x = drag.cx - dx / zoom; cam.y = drag.cy - dy / zoom; clampCam(); return; }
+  }
+  if (e.pointerType !== 'touch') setHover(tileAt(e));
 });
-cv.addEventListener('pointerup', (e) => {
-  if (!drag || drag.id !== e.pointerId) return;
+function endPointer(e, cancel) {
+  pts.delete(e.pointerId);
+  if (pts.size < 2) pinch = null;
+  if (!drag || drag.id !== e.pointerId) { if (pts.size === 0) drag = null; return; }
   const wasDrag = drag.moved; drag = null;
-  if (wasDrag || !S.sel) return;
+  if (cancel || wasDrag) return;
   const [x, y] = tileAt(e); setHover([x, y]);
-  doBuild(S.sel, x, y);
-});
-cv.addEventListener('pointercancel', () => { drag = null; });
-cv.addEventListener('pointerleave', (e) => { if (!drag) setHover(null); });
+  if (S.sel) doBuild(S.sel, x, y);
+  updateHint();
+}
+cv.addEventListener('pointerup', (e) => endPointer(e, false));
+cv.addEventListener('pointercancel', (e) => endPointer(e, true));
+cv.addEventListener('pointerleave', (e) => { if (!drag && e.pointerType !== 'touch') setHover(null); });
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const [sx, sy] = rel(e);
+  zoomAt(zoom * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), sx, sy);
+}, { passive: false });
+$('zoom-in').addEventListener('click', () => zoomAt(zoom * 1.25, VW / 2, VH / 2));
+$('zoom-out').addEventListener('click', () => zoomAt(zoom / 1.25, VW / 2, VH / 2));
 cv.addEventListener('contextmenu', (e) => { e.preventDefault(); S.sel = null; updateHint(); });
 $('buildbar').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) selectBuild(b.dataset.k); });
 

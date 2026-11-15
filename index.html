@@ -35,8 +35,8 @@
     <div class="panel">
       <details open>
         <summary>So wird gespielt</summary>
-        <p><b>Bauen:</b> Gebäude unten auswählen (oder Taste 1 bis 8) und auf freie Wiese klicken. Mit 🧹 Abreißen (X) entfernst du ein Gebäude und bekommst die Hälfte zurück. Rechtsklick oder Esc bricht ab.</p>
-        <p><b>Karte:</b> Mit der Maus oder dem Finger ziehen, oder WASD und Pfeiltasten.</p>
+        <p><b>Bauen:</b> Gebäude unten auswählen (oder Taste 1 bis 8) und auf freie Wiese tippen oder klicken. Mit 🧹 Abreißen (X) entfernst du ein Gebäude und bekommst die Hälfte zurück. Rechtsklick oder Esc bricht ab.</p>
+        <p><b>Karte:</b> Mit Maus oder Finger ziehen, oder WASD und Pfeiltasten. <b>Zoomen</b> mit zwei Fingern, Mausrad, + und − oder den Knöpfen am Spielfeld.</p>
         <p><b>Siedler</b> erledigen alle Arbeit. Drei Gründer sind schon da. Weitere ziehen ein, wenn es eine Feuerstelle, freie Betten und genug Essen gibt. Holzfäller, Sammler, Acker und Steinbruch brauchen je einen freien Siedler und passende Natur in der Nähe.</p>
         <p><b>Überleben, ganz leicht:</b> Jeden Morgen isst jeder Siedler 1 Nahrung. Im Winter wächst nichts und die Hütten brauchen Holz zum Heizen. Wer zwei Tage hungert oder friert, zieht wieder weg.</p>
         <p><b>Zusammen spielen:</b> Einer öffnet ein Dorf mit Name und Passwort und schickt den Einladungslink. Die anderen klicken den Link und treten bei, jederzeit, auch mitten im Spiel. Der Browser des Gastgebers rechnet das Dorf und muss offen bleiben.</p>
@@ -53,10 +53,11 @@
       <span class="res" title="Bewohner / Betten">👥 <b id="r-pop">0</b></span>
       <span class="clock"><span id="c-day">Tag 1</span> · <span id="c-season">Frühling</span> <span class="bar"><i id="c-bar"></i></span></span>
       <span id="speed" class="speed" hidden><button data-s="1" class="small">1×</button><button data-s="2" class="small">2×</button><button data-s="4" class="small">4×</button></span>
-      <span class="level"><b id="l-name">Lagerplatz</b> · <span id="l-goal"></span></span>
+      <span class="level" id="level-box"><b id="l-name">Lagerplatz</b> · <span id="l-goal"></span></span>
     </div>
     <div class="stage">
-      <canvas id="cv" width="960" height="576"></canvas>
+      <canvas id="cv"></canvas>
+      <div class="zoom"><button id="zoom-in" aria-label="Hineinzoomen">+</button><button id="zoom-out" aria-label="Herauszoomen">−</button></div>
       <div id="toasts" class="toasts" aria-live="polite"></div>
     </div>
     <div id="buildbar" class="buildbar"></div>
@@ -79,7 +80,7 @@
     </div>
   </section>
   <div id="update-bar" class="update-bar" hidden>Es gibt eine neue Version. <button id="btn-reload" class="small">Neu laden</button></div>
-  <p class="ver">Version 0.2.0 · __VERSION__ · <a href="iteration-1/">Iteration 1 (mit Spielfigur)</a></p>
+  <p class="ver">Version 0.3.0 · __VERSION__ · <a href="iteration-1/">Iteration 1 (mit Spielfigur)</a></p>
 </main>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script src="game.js?v=__VERSION__"></script>
